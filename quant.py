@@ -253,10 +253,22 @@ def live_score(sd: int, live: dict) -> tuple[float, dict, list[str], list[str]]:
     return pts, det, missing, blockers
 
 
-def decide(f: pd.DataFrame, live: dict, threshold: float | None = None, risk_state: dict | None = None) -> dict:
-    """Son kapanan mum için LONG / SHORT / İŞLEM YOK kararı ve sinyal kartı verisi."""
+def still_valid(f: pd.DataFrame, at: int, P: str) -> bool:
+    """`at` mumunda oluşan sinyal hâlâ geçerli mi? (iptal seviyesi kapanışla geçilmedi, fiyat kaçmadı)"""
+    sd = 1 if P == "L" else -1
+    row = f.iloc[at]
+    after = f["close"].iloc[at + 1:] if at != -1 else f["close"].iloc[0:0]
+    if len(after) and (sd * (after - row[f"{P}_invalid"]) < 0).any():
+        return False
+    now = float(f["close"].iloc[-1])
+    return sd * (now - float(row["close"])) <= C.CHASE_LIMIT_ATR * float(row["atr"])
+
+
+def decide(f: pd.DataFrame, live: dict, threshold: float | None = None, risk_state: dict | None = None,
+           at: int = -1) -> dict:
+    """`at` mumundaki (varsayılan: son kapanan) kurulum için LONG / SHORT / İŞLEM YOK kararı ve sinyal kartı verisi."""
     threshold = C.SCORE_THRESHOLD if threshold is None else threshold
-    row = f.iloc[-1]
+    row = f.iloc[at]
     best = None
     for name, sd in SIDES.items():
         P = name[0]

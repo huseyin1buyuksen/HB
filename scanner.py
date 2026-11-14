@@ -39,18 +39,27 @@ def scan(fetch, live_fn, rules_fn, symbols: list[str], threshold: float, capital
         except Exception as e:
             errors.append(f"{sym}: {e}")
             continue
-        row = f.iloc[-1]
         stale = stale_fn(d15, "15m", now_ms)
-        # canlı veriyi yalnızca teknik olarak aday olanlar için çek (API yükünü azaltır)
-        need_live = any(bool(row[f"{P}_gates_ok"]) and row[f"{P}_tech"] + 15 >= threshold for P in ("L", "S"))
+        # Sinyal, oluştuğu mumdan sonra SIGNAL_VALID_BARS mum boyunca (iptal olmadıysa) aktif kalır
+        cands = [at for at in range(-1, -C.SIGNAL_VALID_BARS - 1, -1)
+                 if any(bool(f.iloc[at][f"{P}_gates_ok"]) and f.iloc[at][f"{P}_tech"] + 15 >= threshold
+                        and Q.still_valid(f, at, P) for P in ("L", "S"))]
         live = {"stale": stale}
-        if need_live:
+        if cands:  # canlı veriyi yalnızca teknik olarak aday olanlar için çek (API yükünü azaltır)
             try:
                 live.update(live_fn(sym))
             except Exception as e:
                 live["live_error"] = str(e)
-        d = Q.decide(f, live, threshold, risk_state)
-        d.update({"symbol": sym, "live_data": live, "features": f, "bar_time": f.index[-1]})
+        d = None
+        for at in cands:
+            d = Q.decide(f, live, threshold, risk_state, at=at)
+            if d["decision"] != "İŞLEM YOK":
+                break
+        if d is None or d["decision"] == "İŞLEM YOK":
+            at = -1
+            d = Q.decide(f, live, threshold, risk_state)
+        d.update({"symbol": sym, "live_data": live, "features": f, "bar_time": f.index[at], "age": -at - 1,
+                  "now_price": float(f["close"].iloc[-1]), "last_bar": f.index[-1]})
         if d["decision"] != "İŞLEM YOK":
             d["plan"] = Q.trade_plan(d, capital, risk_pct, rules_fn(sym))
         results.append(d)
@@ -94,7 +103,9 @@ def card(r: dict, risk_pct: float) -> str:
         src += f" · canlı veri {live['ts']:%H:%M:%S} UTC"
     lines = [f"COIN: {base}USDT", f"KARAR: {r['decision']}",
              f"SİNYAL PUANI: {r['score']:.0f}/100 (teknik {r['tech']:.0f}/85 + canlı {r['live']:.0f}/15; eşik {r['threshold']})",
-             f"GÜNCEL FİYAT: {fmt(float(row['close']))} USDT (son kapanan 15m mum)"]
+             f"GÜNCEL FİYAT: {fmt(r.get('now_price', float(row['close'])))} USDT (son kapanan 15m mum)"]
+    if r.get("age"):
+        lines.append(f"SİNYAL YAŞI: {r['age']} mum önce oluştu ({ts + pd.Timedelta(hours=3):%H:%M} TSİ), hâlâ geçerli")
     if r["decision"] == "İŞLEM YOK":
         reasons = r["blockers"] + r["failed"]
         lines += ["", "NEDEN İŞLEM YOK:"] + [f"- {x}" for x in reasons[:6]]
@@ -176,3 +187,27 @@ def _risks(r):
     rk.append("sahte kırılım (fiyat kırılan seviyenin gerisine kapanırsa sinyal geçersiz)")
     rk.append("likidasyon/haber verisi kontrol edilmedi")
     return rk[:3]
+
+
+def recent_signals(results: list[dict], threshold: float, hours: int = 24) -> pd.DataFrame:
+    """Son `hours` saatte zorunlu şartları sağlayan sinyaller ve o andan bu yana ne olduğu (backtest kurallarıyla)."""
+    import backtest as B
+    rows = []
+    for r in results:
+        f = r["features"]
+        last = f.index[-1]
+        for t in B.simulate_signals(r["symbol"], f, threshold):
+            if t["signal_time"] < last - pd.Timedelta(hours=hours):
+                continue
+            running = t["exit_time"] == last and t["tp_hits"] < 3 and t["R"] > -0.95
+            rows.append({
+                "Zaman (TSİ)": (t["signal_time"] + pd.Timedelta(minutes=15, hours=3)).strftime("%d.%m %H:%M"),
+                "Kontrat": r["symbol"].split(":")[0], "Yön": t["side"], "Teknik puan": round(t["score"]),
+                "Giriş": fmt(t["entry"]), "Stop": fmt(t["stop"]), "Alınan TP": t["tp_hits"],
+                "Sonuç (R)": round(t["R"], 2),
+                "Durum": "Devam ediyor" if running else ("Kâr" if t["R"] > 0 else "Zarar"),
+                "_t": t["signal_time"],
+            })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("_t", ascending=False).drop(columns="_t")

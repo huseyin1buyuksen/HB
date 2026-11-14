@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 import backtest as B
 import config as C
@@ -71,10 +72,17 @@ with st.sidebar:
                                 help=f"Toplam açık risk %{C.MAX_OPEN_RISK_PCT * 100:.0f}'yi geçecekse yeni sinyal verilmez.")
     if st.button("🔄 Şimdi yeniden tara", use_container_width=True):
         candles.clear()
-    st.caption("Veri: MEXC USDT-M Futures (herkese açık API). Sinyaller sadece kapanmış 15m mumlardan üretilir; "
-               "yeni sinyal için mum kapanışından (:00, :15, :30, :45) sonra yenile.")
+    st.caption("Veri: MEXC USDT-M Futures (herkese açık API). Sinyaller kapanmış 15m mumlardan üretilir ve iptal olmadıkça "
+               f"{C.SIGNAL_VALID_BARS} mum (~{C.SIGNAL_VALID_BARS * 15} dk) listede kalır. Sayfa her mum kapanışından ~1 dk sonra kendini yeniler.")
 
 risk_state = {"daily_loss_pct": daily_loss, "open_risk_pct": open_risk, "risk_pct": risk_pct * 100}
+
+# Otomatik yenileme: her 15m mum kapanışından ~1 dk sonra sayfayı yeniden yükler
+components.html("""<script>
+const now = new Date(); const ms = 15 * 60 * 1000;
+const wait = ms - (now.getTime() % ms) + 60 * 1000;
+setTimeout(() => { try { window.parent.location.reload(); } catch (e) { location.reload(); } }, wait);
+</script>""", height=0)
 
 st.title("📈 Quant Futures — MEXC LONG/SHORT")
 st.caption("Çoklu zaman dilimi trend · SMC piyasa yapısı · hacim/OI/funding · momentum · likidite · BTC/ETH uyumu · "
@@ -117,8 +125,20 @@ with tab_sig:
                 "Bu normaldir; sistem fırsat kovalamaz, kanıt bekler. En yakın adaylar aşağıda.")
     for r in sorted(signals, key=lambda r: -r["score"]):
         with st.container(border=True):
-            st.markdown(f"### {'🟢' if r['decision'] == 'LONG' else '🔴'} {r['symbol'].split(':')[0]} — {r['decision']} · {r['score']:.0f}/100")
+            age = f" · {r['age']} mum önce oluştu, hâlâ geçerli" if r.get("age") else " · yeni"
+            st.markdown(f"### {'🟢' if r['decision'] == 'LONG' else '🔴'} {r['symbol'].split(':')[0]} — {r['decision']} · {r['score']:.0f}/100{age}")
             st.code(SC.card(r, risk_pct), language=None)
+
+    st.subheader("🕘 Son 24 saatte verilen sinyaller")
+    hist_df = SC.recent_signals(res, threshold)
+    if hist_df.empty:
+        st.caption("Son 24 saatte bu modun şartlarını sağlayan sinyal yok.")
+    else:
+        done = hist_df[hist_df["Durum"] != "Devam ediyor"]
+        st.caption(f"{len(hist_df)} sinyal · kapanan {len(done)} işlemin toplamı {done['Sonuç (R)'].sum():+.2f} R "
+                   f"(1R = işlem başı risk). Sonuçlar backtest kurallarıyla hesaplanır: giriş sonraki mum açılışı, "
+                   f"önce stop varsayımı, TP1 sonrası başa baş. Canlı veri puanı geçmiş için yok; teknik puan kullanılır.")
+        st.dataframe(hist_df, hide_index=True, use_container_width=True)
 
     near = sorted([r for r in res if r["decision"] == "İŞLEM YOK"], key=lambda r: (len(r["failed"]) + len(r["blockers"]), -r["score"]))[:5]
     if near:
