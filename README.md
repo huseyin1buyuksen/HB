@@ -1,4 +1,8 @@
-# MEXC Altcoin Sinyal Botu (trend + momentum)
+# MEXC Altcoin Sinyal Botu (trend + momentum, LONG + SHORT)
+
+> **Güncel ayarlar:** 15 dakikalık grafik, LONG + SHORT, BTC filtresi kapalı (her coinin kendi kırılımı yeterli).
+> SHORT girişi: coin EMA altında + momentum negatif + önceki 20 mumun **dibini** aşağı kırar. Short için MEXC vadeli (futures) gerekir.
+> Zaman dilimi, BTC filtresi ve yönler `config.py` içinden veya sitenin sol menüsünden değiştirilebilir.
 
 Bu araç **işlem yapmaz**. Sadece sinyal üretir ve stratejiyi geçmiş veride test eder. API anahtarı gerekmez, çünkü sadece herkese açık fiyat verisini kullanır. Çıktıları yatırım tavsiyesi değildir.
 

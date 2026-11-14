@@ -1,14 +1,22 @@
 """
-Sinyal mantığı. Backtest ve canlı bot AYNI fonksiyonları kullanır,
-böylece test ettiğin şeyle çalıştırdığın şey birebir aynı olur.
+Sinyal mantığı (LONG + SHORT). Backtest, web sitesi ve Telegram botu AYNI fonksiyonları kullanır.
 
 Tüm sinyaller mumun KAPANIŞINDA hesaplanır; işlem bir sonraki mumun açılışında yapılır
 (geleceği görme hatası olmasın diye).
+
+LONG : fiyat EMA üstünde + momentum pozitif + önceki N mumun ZİRVESİNİ yukarı kırar
+SHORT: fiyat EMA altında + momentum negatif + önceki N mumun DİBİNİ aşağı kırar
 """
 import numpy as np
 import pandas as pd
 
 import config as C
+
+TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+
+
+def bars_per_day(tf: str | None = None) -> float:
+    return 1440 / TF_MINUTES.get(tf or C.TIMEFRAME, 1440)
 
 
 def atr(df: pd.DataFrame, period: int) -> pd.Series:
@@ -25,27 +33,29 @@ def add_indicators(df: pd.DataFrame, p: dict | None = None) -> pd.DataFrame:
     df = df.copy()
     df["ema"] = df["close"].ewm(span=p["trend_ema"], adjust=False).mean()
     df["mom"] = df["close"] / df["close"].shift(p["momentum_lookback"]) - 1
-    df["hh"] = df["high"].shift(1).rolling(p["breakout_lookback"]).max()
-    df["ll"] = df["low"].shift(1).rolling(p["exit_lookback"]).min()
+    df["hh"] = df["high"].shift(1).rolling(p["breakout_lookback"]).max()   # long giriş seviyesi
+    df["lo"] = df["low"].shift(1).rolling(p["breakout_lookback"]).min()    # short giriş seviyesi
+    df["ll"] = df["low"].shift(1).rolling(p["exit_lookback"]).min()        # long çıkış seviyesi
+    df["hx"] = df["high"].shift(1).rolling(p["exit_lookback"]).max()       # short çıkış seviyesi
     df["atr"] = atr(df, p["atr_period"])
     df["avg_qvol"] = (df["close"] * df["volume"]).rolling(20).mean()
+    liquid = df["avg_qvol"] >= C.MIN_AVG_QUOTE_VOLUME / bars_per_day()
 
-    df["entry_signal"] = (
-        (df["close"] > df["ema"])
-        & (df["mom"] > 0)
-        & (df["close"] > df["hh"])
-        & (df["avg_qvol"] >= C.MIN_AVG_QUOTE_VOLUME)
-    )
-    df["exit_signal"] = df["close"] < df["ll"]
+    df["entry_long"] = C.ENABLE_LONG & (df["close"] > df["ema"]) & (df["mom"] > 0) & (df["close"] > df["hh"]) & liquid
+    df["entry_short"] = C.ENABLE_SHORT & (df["close"] < df["ema"]) & (df["mom"] < 0) & (df["close"] < df["lo"]) & liquid
+    df["exit_long"] = df["close"] < df["ll"]
+    df["exit_short"] = df["close"] > df["hx"]
+    # eski adlar (geriye uyumluluk)
+    df["entry_signal"], df["exit_signal"] = df["entry_long"], df["exit_long"]
     return df
 
 
-def regime_series(btc: pd.DataFrame, p: dict | None = None) -> pd.Series:
-    """BTC trend filtresi: BTC kendi EMA'sının üstünde ve momentumu pozitifse True."""
+def regime_series(btc: pd.DataFrame, p: dict | None = None) -> tuple[pd.Series, pd.Series]:
+    """BTC rejimi: (boğa, ayı). Boğada sadece LONG, ayıda sadece SHORT açılır; ikisi de değilse giriş yok."""
     p = {**default_params(), **(p or {})}
     ema = btc["close"].ewm(span=p["trend_ema"], adjust=False).mean()
     mom = btc["close"] / btc["close"].shift(p["momentum_lookback"]) - 1
-    return (btc["close"] > ema) & (mom > 0)
+    return (btc["close"] > ema) & (mom > 0), (btc["close"] < ema) & (mom < 0)
 
 
 def default_params() -> dict:

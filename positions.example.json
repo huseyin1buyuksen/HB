@@ -1,4 +1,4 @@
 {
-  "SOL/USDT": {"entry_date": "2026-11-01"},
-  "LINK/USDT": {"entry_date": "2026-11-10"}
+  "SOL/USDT": {"side": "LONG", "entry_date": "2026-11-14 10:30"},
+  "DOGE/USDT": {"side": "SHORT", "entry_date": "2026-11-14 11:15"}
 }

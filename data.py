@@ -36,12 +36,20 @@ def pick_universe(ex) -> list[str]:
     return [s for s, _ in rows[: C.TOP_N]]
 
 
+def history_start() -> str:
+    """Backtest için veri başlangıcı: günlükte HISTORY_START, kısa zaman dilimlerinde son HISTORY_DAYS gün."""
+    days = C.HISTORY_DAYS.get(C.TIMEFRAME)
+    if not days:
+        return C.HISTORY_START
+    return (pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+
+
 def fetch_ohlcv(ex, symbol: str, since: str | None = None, limit_bars: int | None = None) -> pd.DataFrame:
     tf_ms = ex.parse_timeframe(C.TIMEFRAME) * 1000
     if limit_bars:
         since_ms = ex.milliseconds() - (limit_bars + 2) * tf_ms
     else:
-        since_ms = ex.parse8601((since or C.HISTORY_START) + "T00:00:00Z")
+        since_ms = ex.parse8601((since or history_start()) + "T00:00:00Z")
     rows = []
     while True:
         batch = ex.fetch_ohlcv(symbol, C.TIMEFRAME, since=since_ms, limit=500)

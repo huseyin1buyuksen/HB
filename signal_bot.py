@@ -4,8 +4,8 @@ Web sitesiyle (app.py) aynı tarama kodunu kullanır. Her mum kapanışından so
 
     python signal_bot.py
 
-Elindeki coinleri positions.json dosyasına yazarsan çıkış sinyallerini ve güncel stop seviyesini de verir:
-    {"SOL/USDT": {"entry_date": "2026-11-01"}}
+Açık pozisyonlarını positions.json dosyasına yazarsan çıkış sinyallerini ve güncel stop seviyesini de verir:
+    {"SOL/USDT": {"side": "LONG", "entry_date": "2026-11-14 10:30"}, "DOGE/USDT": {"side": "SHORT"}}
 """
 import json
 import os
@@ -16,7 +16,7 @@ import config as C
 import data as D
 import signals as SG
 
-ICON = {"ÇIKIŞ": "🔴", "GİRİŞ": "🟢", "TUT": "🟡", "İZLE": "👀"}
+ICON = {"ÇIKIŞ": "❌", "GİRİŞ": "🚀", "TUT": "🟡", "İZLE": "👀"}
 
 
 def send(text: str):
@@ -41,13 +41,13 @@ def main():
     res = SG.scan(lambda s, n: D.fetch_ohlcv(ex, s, limit_bars=n), D.pick_universe(ex), load_positions())
     lines = [
         f"📊 MEXC sinyal raporu — {res['bar_time']:%Y-%m-%d %H:%M} UTC mumu ({C.TIMEFRAME})",
-        f"BTC rejimi: {'✅ trend var, yeni giriş serbest' if res['regime_ok'] else '⛔ trend yok, yeni giriş YOK'}",
+        f"BTC durumu: {res['regime']} · BTC filtresi {'açık' if C.USE_BTC_FILTER else 'kapalı'}",
         "",
     ]
     for r in res["rows"]:
         if r["Durum"] in ICON:
             stop = f", stop {r['Stop']:.6g}" if r["Stop"] == r["Stop"] else ""
-            lines.append(f"{ICON[r['Durum']]} {r['Coin']} {r['Durum']} — {r['Not']} (kapanış {r['Kapanış']:.6g}{stop})")
+            lines.append(f"{ICON[r['Durum']]} {r['Coin']} {r['Yön']} {r['Durum']} — {r['Not']} (kapanış {r['Kapanış']:.6g}{stop})")
     if not any(r["Durum"] == "GİRİŞ" for r in res["rows"]):
         lines.append("Yeni giriş sinyali yok.")
     lines += ["", "Bu rapor bir test aracının çıktısıdır, yatırım tavsiyesi değildir."]

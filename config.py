@@ -6,8 +6,14 @@ araştırmada en büyük tehlike çıkan şey overfitting (geçmişe aşırı uy
 # ---------------- Piyasa / veri ----------------
 EXCHANGE = "mexc"
 QUOTE = "USDT"
-TIMEFRAME = "1d"            # "1d" veya "4h"
-HISTORY_START = "2021-01-01"  # backtest için veri başlangıcı
+TIMEFRAME = "15m"           # "15m", "1h", "4h" veya "1d"
+HISTORY_START = "2021-01-01"  # günlük grafikte backtest veri başlangıcı
+# Kısa zaman dilimlerinde backtest için kaç günlük veri indirilecek (15m'de yıllarca veri çok büyük olur)
+HISTORY_DAYS = {"15m": 60, "1h": 240, "4h": 900}
+
+# Yönler: long = yükselişte al, short = düşüşte aç (short için MEXC vadeli/futures gerekir)
+ENABLE_LONG = True
+ENABLE_SHORT = True
 DATA_DIR = "data"
 
 # Coin evreni: boş bırakılırsa MEXC'de USDT hacmine göre en büyük TOP_N altcoin otomatik seçilir.
@@ -16,10 +22,14 @@ TOP_N = 30
 EXCLUDE_BASES = {
     "BTC", "USDC", "FDUSD", "TUSD", "DAI", "USDE", "USDD", "BUSD", "PYUSD", "EUR", "USD1",
 }
-MIN_AVG_QUOTE_VOLUME = 1_000_000  # 20 mumluk ortalama USDT hacmi bunun altındaysa işlem açılmaz
+MIN_AVG_QUOTE_VOLUME = 1_000_000  # GÜNLÜK ortalama USDT hacmi bunun altındaysa işlem açılmaz (zaman dilimine göre ölçeklenir)
 
-# BTC rejim filtresi: altcoinler BTC'yi takip eder, BTC trendde değilse yeni giriş yok
+# BTC rejim filtresi: altcoinler BTC'yi takip eder.
+# BTC yükseliş trendindeyse sadece LONG, düşüş trendindeyse sadece SHORT girişine izin verilir.
 REGIME_SYMBOL = "BTC/USDT"
+# False: BTC'nin durumuna bakmadan her coinin kendi kırılımında sinyal verir (daha çok fırsat, daha çok risk).
+# True : sadece BTC aynı yöndeyken giriş verir (araştırmada düşüşleri azaltan ayar).
+USE_BTC_FILTER = False
 
 # ---------------- Strateji ----------------
 TREND_EMA = 50          # fiyat bu EMA'nın üstünde olmalı

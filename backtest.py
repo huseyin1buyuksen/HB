@@ -19,104 +19,122 @@ import strategy as S
 
 
 def bars_per_year() -> float:
-    return {"1d": 365, "4h": 365 * 6, "1h": 365 * 24}.get(C.TIMEFRAME, 365)
+    return 365 * S.bars_per_day()
 
 
 def run_backtest(data: dict[str, pd.DataFrame], btc: pd.DataFrame, params: dict | None = None):
+    """LONG + SHORT portföy simülasyonu. side: +1 long, -1 short.
+    Short'ta teminat = pozisyon büyüklüğü (kaldıraçsız varsayım)."""
     p = {**S.default_params(), **(params or {})}
-    ind = {s: S.add_indicators(df, p) for s, df in data.items()}
-    regime = S.regime_series(btc, p)
-    index = sorted(set().union(*[df.index for df in ind.values()]))
-    index = pd.DatetimeIndex(index)
-    regime = regime.reindex(index).ffill().fillna(False).astype(bool)
+    m = p["atr_stop_mult"]
+    index = pd.DatetimeIndex(sorted(set().union(*[df.index for df in data.values()])))
+    cols = ["open", "close", "atr", "mom", "entry_long", "entry_short", "exit_long", "exit_short"]
+    A = {}
+    for s, df in data.items():
+        d = S.add_indicators(df, p).reindex(index)
+        A[s] = {c: d[c].to_numpy(dtype=float) for c in cols}
+    bull, bear = S.regime_series(btc, p)
+    bull = bull.reindex(index).ffill().fillna(False).astype(bool).to_numpy()
+    bear = bear.reindex(index).ffill().fillna(False).astype(bool).to_numpy()
+    if not C.USE_BTC_FILTER:  # filtre kapalı: her iki yöne de her zaman izin ver
+        bull = np.ones(len(index), dtype=bool)
+        bear = np.ones(len(index), dtype=bool)
 
     cash = C.INITIAL_CAPITAL
     pos: dict[str, dict] = {}
-    pending_entry: list[str] = []
+    pending_entry: list[tuple[str, int]] = []
     pending_exit: set[str] = set()
-    last_close: dict[str, float] = {}
+    last: dict[str, float] = {}
     trades, equity = [], []
 
-    for t in index:
-        # 1) Bekleyen çıkışlar: açılıştan sat
+    def mark_equity():
+        return cash + sum(ps["notional"] + ps["side"] * ps["qty"] * (last.get(s, ps["entry_price"]) - ps["entry_price"])
+                          for s, ps in pos.items())
+
+    for i, t in enumerate(index):
+        # 1) Bekleyen çıkışlar: açılışta kapat
         for s in list(pending_exit):
-            df = ind[s]
-            if t not in df.index:
+            o = A[s]["open"][i]
+            if not np.isfinite(o):
                 continue
-            px = df.at[t, "open"] * (1 - C.SLIPPAGE)
             ps = pos.pop(s)
-            proceeds = ps["qty"] * px * (1 - C.FEE_RATE)
-            cash += proceeds
+            px = o * (1 - ps["side"] * C.SLIPPAGE)
+            gross = ps["side"] * ps["qty"] * (px - ps["entry_price"])
+            exit_fee = ps["qty"] * px * C.FEE_RATE
+            cash += ps["notional"] + gross - exit_fee
+            pnl = gross - exit_fee - ps["entry_fee"]
             trades.append({
-                "symbol": s, "entry_time": ps["entry_time"], "exit_time": t,
+                "symbol": s, "side": "LONG" if ps["side"] > 0 else "SHORT",
+                "entry_time": ps["entry_time"], "exit_time": t,
                 "entry_price": ps["entry_price"], "exit_price": px,
-                "pnl": proceeds - ps["cost"], "ret": proceeds / ps["cost"] - 1,
-                "reason": ps.get("exit_reason", ""),
+                "pnl": pnl, "ret": pnl / ps["notional"], "reason": ps.get("exit_reason", ""),
             })
             pending_exit.discard(s)
 
-        # 2) Bekleyen girişler: açılıştan al
+        # 2) Bekleyen girişler: açılışta aç
         if pending_entry:
-            mark = cash + sum(ps["qty"] * last_close.get(s, ps["entry_price"]) for s, ps in pos.items())
-            for s in pending_entry:
-                df = ind[s]
-                if t not in df.index or s in pos or len(pos) >= C.MAX_OPEN_POSITIONS:
+            eq_now = mark_equity()
+            for s, side in pending_entry:
+                o = A[s]["open"][i]
+                if not np.isfinite(o) or s in pos or len(pos) >= C.MAX_OPEN_POSITIONS:
                     continue
-                px = df.at[t, "open"] * (1 + C.SLIPPAGE)
-                sig_atr = df["atr"].loc[:t].iloc[-2] if len(df.loc[:t]) > 1 else np.nan
-                qty = S.position_size(mark, px, sig_atr, p["atr_stop_mult"])
-                cost = qty * px * (1 + C.FEE_RATE)
-                if cost > cash:
-                    qty = cash / (px * (1 + C.FEE_RATE))
-                    cost = cash
-                if qty <= 0 or cost < 10:  # 10 USDT altı emir anlamsız
+                px = o * (1 + side * C.SLIPPAGE)
+                sig_atr = A[s]["atr"][i - 1] if i > 0 else np.nan
+                qty = S.position_size(eq_now, px, sig_atr, m)
+                notional = qty * px
+                fee = notional * C.FEE_RATE
+                if notional + fee > cash:
+                    notional = cash / (1 + C.FEE_RATE)
+                    qty, fee = notional / px, notional * C.FEE_RATE
+                if qty <= 0 or notional < 10:  # 10 USDT altı emir anlamsız
                     continue
-                cash -= cost
-                pos[s] = {
-                    "qty": qty, "entry_price": px, "entry_time": t, "cost": cost,
-                    "highest": px, "stop": px - p["atr_stop_mult"] * sig_atr,
-                }
+                cash -= notional + fee
+                pos[s] = {"side": side, "qty": qty, "entry_price": px, "entry_time": t, "notional": notional,
+                          "entry_fee": fee, "extreme": px, "stop": px - side * m * sig_atr}
             pending_entry = []
 
-        # 3) Kapanışta: stop güncelle, çıkış/giriş sinyallerini topla
+        # 3) Kapanış: fiyatları güncelle, stop'ları kaydır, sinyalleri topla
+        for s in A:
+            c = A[s]["close"][i]
+            if np.isfinite(c):
+                last[s] = c
         for s, ps in pos.items():
-            df = ind[s]
-            if t not in df.index:
+            c, a = A[s]["close"][i], A[s]["atr"][i]
+            if not np.isfinite(c):
                 continue
-            row = df.loc[t]
-            last_close[s] = row["close"]
-            ps["highest"] = max(ps["highest"], row["close"])
-            ps["stop"] = max(ps["stop"], ps["highest"] - p["atr_stop_mult"] * row["atr"])
-            if row["close"] < ps["stop"]:
+            if ps["side"] > 0:
+                ps["extreme"] = max(ps["extreme"], c)
+                ps["stop"] = max(ps["stop"], ps["extreme"] - m * a)
+                hit, sig = c < ps["stop"], A[s]["exit_long"][i] == 1
+            else:
+                ps["extreme"] = min(ps["extreme"], c)
+                ps["stop"] = min(ps["stop"], ps["extreme"] + m * a)
+                hit, sig = c > ps["stop"], A[s]["exit_short"][i] == 1
+            if hit:
                 ps["exit_reason"] = "ATR stop"
                 pending_exit.add(s)
-            elif row["exit_signal"]:
-                ps["exit_reason"] = f"{p['exit_lookback']} mum dibi kırıldı"
+            elif sig:
+                ps["exit_reason"] = f"{p['exit_lookback']} mum kanalı ters kırıldı"
                 pending_exit.add(s)
 
-        for s, df in ind.items():
-            if t in df.index:
-                last_close[s] = df.at[t, "close"]
+        free = C.MAX_OPEN_POSITIONS - (len(pos) - len(pending_exit))
+        if free > 0 and (bull[i] or bear[i]):
+            cands = []
+            for s, a in A.items():
+                if s in pos:
+                    continue
+                if bull[i] and a["entry_long"][i] == 1:
+                    cands.append((a["mom"][i], s, 1))
+                elif bear[i] and a["entry_short"][i] == 1:
+                    cands.append((-a["mom"][i], s, -1))
+            cands.sort(reverse=True)  # en güçlü momentum önce
+            pending_entry = [(s, side) for _, s, side in cands[:free]]
 
-        if regime.loc[t]:
-            free = C.MAX_OPEN_POSITIONS - (len(pos) - len(pending_exit))
-            if free > 0:
-                cands = []
-                for s, df in ind.items():
-                    if s in pos or t not in df.index:
-                        continue
-                    if bool(df.at[t, "entry_signal"]):
-                        cands.append((df.at[t, "mom"], s))
-                cands.sort(reverse=True)  # en güçlü momentum önce
-                pending_entry = [s for _, s in cands[:free]]
-
-        eq = cash + sum(ps["qty"] * last_close.get(s, ps["entry_price"]) for s, ps in pos.items())
-        equity.append((t, eq))
+        equity.append((t, mark_equity()))
 
     eq = pd.Series(dict(equity)).sort_index()
     tr = pd.DataFrame(trades)
-    open_pos = {s: {k: v for k, v in ps.items()} for s, ps in pos.items()}
-    return eq, tr, open_pos
+    return eq, tr, dict(pos)
 
 
 def metrics(eq: pd.Series, tr: pd.DataFrame) -> dict:
@@ -125,7 +143,7 @@ def metrics(eq: pd.Series, tr: pd.DataFrame) -> dict:
     rets = eq.pct_change().dropna()
     years = (eq.index[-1] - eq.index[0]).days / 365.25 or float("nan")
     total = eq.iloc[-1] / eq.iloc[0] - 1
-    cagr = (eq.iloc[-1] / eq.iloc[0]) ** (1 / years) - 1 if years and years > 0 else float("nan")
+    cagr = (eq.iloc[-1] / eq.iloc[0]) ** (1 / years) - 1 if years and years >= 0.5 else float("nan")  # 6 aydan kısa dönemde yıllıklandırma yanıltıcı
     dd = (eq / eq.cummax() - 1).min()
     sharpe = rets.mean() / rets.std() * math.sqrt(bars_per_year()) if rets.std() > 0 else float("nan")
     m = {"Toplam getiri": total, "Yıllık getiri (CAGR)": cagr, "Maks. düşüş": dd, "Sharpe": sharpe,
@@ -241,7 +259,7 @@ def run(hist, btc, grid_mode=False):
     if len(tr):
         tr.to_csv("islemler.csv", index=False)
         print("Tüm işlemler: islemler.csv")
-        by_sym = tr.groupby("symbol").pnl.agg(["count", "sum"]).sort_values("sum", ascending=False)
+        by_sym = tr.groupby(["symbol", "side"]).pnl.agg(["count", "sum"]).sort_values("sum", ascending=False)
         print("\nCoin bazında (işlem sayısı, toplam kâr/zarar USDT):")
         print(by_sym.round(1).to_string())
     if open_pos:
