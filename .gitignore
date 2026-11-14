@@ -1,0 +1,5 @@
+data/
+__pycache__/
+positions.json
+islemler.csv
+backtest_sonuc.png
