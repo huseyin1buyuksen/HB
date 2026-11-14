@@ -66,9 +66,9 @@ def fetch_ohlcv(ex, symbol: str, tf: str, bars: int | None = None, since_ms: int
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"]).drop_duplicates("ts").sort_values("ts")
     df.index = pd.to_datetime(df["ts"], unit="ms", utc=True)
     df = df.drop(columns="ts").astype(float)
-    if len(df) and df.index[-1].value // 10**6 + tf_ms > now:   # kapanmamış son mumu at
-        df = df.iloc[:-1]
-    return df
+    # sadece KAPANMIŞ mumlar: kapanmamış son mumu ve (borsa hatasıyla) gelecekte görünen mumları at
+    close_ms = df.index.as_unit("ms").asi8 + tf_ms
+    return df[close_ms <= now]
 
 
 def is_stale(df: pd.DataFrame, tf: str, now_ms: int) -> bool:
@@ -76,7 +76,8 @@ def is_stale(df: pd.DataFrame, tf: str, now_ms: int) -> bool:
         return True
     tf_ms = I.TF_MIN[tf] * 60_000
     last_close_ms = df.index[-1].value // 10**6 + tf_ms
-    return now_ms - last_close_ms > C.MAX_STALE_BARS * tf_ms
+    lag = now_ms - last_close_ms
+    return lag > C.MAX_STALE_BARS * tf_ms or lag < -tf_ms   # çok eski ya da gelecekte görünen veri güvenilmez
 
 
 def market_rules(ex, symbol: str) -> dict:

@@ -29,6 +29,9 @@ def scan(fetch, live_fn, rules_fn, symbols: list[str], threshold: float, capital
             progress(n / max(1, len(symbols)), sym)
         try:
             d15, d1h, d4h = fetch(sym, "15m", BARS["15m"]), fetch(sym, "1h", BARS["1h"]), fetch(sym, "4h", BARS["4h"])
+            if stale_fn(d15, "15m", now_ms):
+                errors.append(f"{sym}: veri güncel değil veya zaman damgası hatalı — atlandı (İŞLEM YOK)")
+                continue
             if len(d15) < 250:
                 errors.append(f"{sym}: yetersiz geçmiş ({len(d15)} mum)")
                 continue
@@ -96,7 +99,9 @@ def card(r: dict, risk_pct: float) -> str:
         reasons = r["blockers"] + r["failed"]
         lines += ["", "NEDEN İŞLEM YOK:"] + [f"- {x}" for x in reasons[:6]]
         lines += ["", f"BEKLENEN TETİKLEYİCİ: {_awaited(r)}"]
-        if r.get("missing"):
+        if live.get("ts") is None:
+            lines.append("CANLI VERİ (funding/OI/emir defteri): teknik zorunlu şartlar sağlanmadığı için çekilmedi")
+        elif r.get("missing"):
             lines.append(f"EKSİK CANLI VERİ: {', '.join(r['missing'])}")
         lines += [f"VERİ KAYNAĞI VE SAATİ: {src}", "SONUÇ: Şartlar oluşana kadar işlem açılmaz."]
         return "\n".join(lines)
