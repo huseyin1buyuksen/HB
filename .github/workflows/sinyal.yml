@@ -1,0 +1,40 @@
+name: Sinyal botu (Telegram)
+
+on:
+  schedule:
+    - cron: "1,16,31,46 * * * *"   # her 15m mum kapanışından ~1 dk sonra (GitHub birkaç dakika gecikebilir)
+  workflow_dispatch:                # Actions sekmesinden elle de çalıştırılabilir
+
+concurrency:
+  group: sinyal-botu
+  cancel-in-progress: false
+
+jobs:
+  tara:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install "ccxt>=4.3" "pandas>=2.0" "numpy>=1.24"
+      - name: Önceki durumu yükle (gönderilen sinyaller)
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: sinyal-state-${{ github.run_id }}
+          restore-keys: sinyal-state-
+      - name: Tara ve Telegram'a gönder
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CAPITAL: ${{ secrets.CAPITAL }}
+        run: python signal_bot.py --state state/sent.json
+      - name: Durumu kaydet
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: sinyal-state-${{ github.run_id }}
