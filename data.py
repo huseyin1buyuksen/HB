@@ -30,7 +30,7 @@ def pick_universe(ex, top_n: int | None = None) -> tuple[list[str], dict]:
     rows = []
     for sym, t in tickers.items():
         m = ex.markets.get(sym)
-        if not is_usdt_perp(m) or m["base"] in C.EXCLUDE_BASES:
+        if not is_usdt_perp(m) or m["base"] in C.EXCLUDE_BASES or m["base"].endswith(C.EXCLUDE_SUFFIXES):
             continue
         rows.append((sym, quote_volume(t)))
     rows.sort(key=lambda r: r[1], reverse=True)

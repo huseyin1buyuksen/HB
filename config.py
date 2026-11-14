@@ -8,7 +8,11 @@ MARKET_TYPE = "swap"          # MEXC USDT-M sürekli vadeli (futures)
 QUOTE = "USDT"
 BASE_TF = "15m"               # sinyal ve tetikleyici zaman dilimi
 TOP_N = 30                    # 24s hacmine göre taranacak coin sayısı
-EXCLUDE_BASES = {"BTC", "USDC", "FDUSD", "TUSD", "DAI", "USDE", "USD1", "PYUSD"}
+EXCLUDE_BASES = {"BTC", "USDC", "FDUSD", "TUSD", "DAI", "USDE", "USD1", "PYUSD",
+                 # kripto olmayan kontratlar (emtia, endeks, altın tokenları)
+                 "UKOIL", "USOIL", "WTI", "BRENT", "NATGAS", "XAU", "XAG", "XAUT", "PAXG", "GOLD", "SILVER",
+                 "COPPER", "PLATINUM", "SPX", "NDX", "DJI", "NAS100", "US30", "US500", "DXY"}
+EXCLUDE_SUFFIXES = ("STOCK",)  # MEXC hisse senedi kontratları (örn. TSLASTOCK)
 BTC = "BTC/USDT:USDT"
 ETH = "ETH/USDT:USDT"
 MAX_STALE_BARS = 2            # son kapanan mum bundan daha eskiyse veri bayat sayılır -> İŞLEM YOK
