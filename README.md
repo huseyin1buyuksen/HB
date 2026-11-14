@@ -1,100 +1,36 @@
-# MEXC Altcoin Sinyal Botu (trend + momentum, LONG + SHORT)
+# Quant Futures — MEXC USDT-M LONG/SHORT sinyal sistemi
 
-> **Güncel ayarlar:** 15 dakikalık grafik, LONG + SHORT, BTC filtresi kapalı (her coinin kendi kırılımı yeterli).
-> SHORT girişi: coin EMA altında + momentum negatif + önceki 20 mumun **dibini** aşağı kırar. Short için MEXC vadeli (futures) gerekir.
-> Zaman dilimi, BTC filtresi ve yönler `config.py` içinden veya sitenin sol menüsünden değiştirilebilir.
+Canlı site: https://hb-mexc-sinyal.streamlit.app
 
-Bu araç **işlem yapmaz**. Sadece sinyal üretir ve stratejiyi geçmiş veride test eder. API anahtarı gerekmez, çünkü sadece herkese açık fiyat verisini kullanır. Çıktıları yatırım tavsiyesi değildir.
+Bu araç **işlem yapmaz**; MEXC vadeli (futures) piyasasının herkese açık verisiyle sinyal üretir ve stratejiyi geçmişte test eder.
+Temel ilke: işlem açmak zorunlu değil — kanıt yetersizse **İŞLEM YOK**. Çıktılar yatırım tavsiyesi değildir.
 
-## Strateji (araştırmadan çıkan yapı)
-
-| Katman | Kural |
+## Dosyalar
+| Dosya | Görev |
 |---|---|
-| BTC rejim filtresi | BTC 50 EMA'nın üstünde ve 20 mumluk getirisi pozitifse yeni girişe izin var |
-| Trend | Coin 50 EMA'nın üstünde |
-| Momentum | 20 mumluk getiri pozitif |
-| Giriş | Kapanış, önceki 20 mumun en yükseğini kırar (Donchian kırılımı) |
-| Likidite | 20 mumluk ortalama hacim ≥ 1M USDT |
-| Çıkış | Kapanış önceki 10 mumun dibinin altına düşer **veya** iz süren ATR stop'un altına düşer (en yüksek kapanış − 3×ATR) |
-| Pozisyon | Stop'a kadar olan kayıp sermayenin %1'i, tek coin en fazla %20, en fazla 5 açık pozisyon |
-| Maliyet | İşlem başına %0.1 komisyon + %0.1 kayma |
+| `config.py` | Tüm ayarlar (eşik, risk, maliyet, gösterge parametreleri) |
+| `indicators.py` | EMA, RSI, MACD, ADX, ATR, Bollinger, VWAP, Supertrend; swing, BOS/CHoCH, FVG, likidite süpürmesi, önceki gün/hafta seviyeleri |
+| `quant.py` | 100 puanlık skor, zorunlu şartlar, İŞLEM YOK kuralları, entry/stop/TP ve pozisyon hesabı |
+| `data.py` | MEXC Futures verisi: çoklu zaman dilimi mumlar, funding, OI, emir defteri, kontrat kuralları |
+| `scanner.py` | Canlı tarama ve zorunlu sinyal kartı formatı |
+| `backtest.py` | Train/validation/OOS, walk-forward, eşik optimizasyonu, rejim/yön/coin kırılımı |
+| `app.py` | Web sitesi (Streamlit) |
+| `signal_bot.py` | Telegram botu |
 
-Sinyal mum kapanışında üretilir, işlem bir sonraki mumun açılışında varsayılır. Tüm ayarlar `config.py` dosyasında.
-
-## Kurulum
-
+## Çalıştırma
 ```bash
 pip install -r requirements.txt
+streamlit run app.py                         # siteyi bilgisayarında aç
+python backtest.py --days 730 --coins 20     # 2 yıllık tam backtest (uzun sürer)
+python signal_bot.py --capital 1000          # tek tarama, sinyal varsa Telegram'a gönderir
 ```
 
-## 0. Sinyal sitesi (web paneli)
+## Geleceği görme ve diğer yanlılıklar
+- Swing noktaları ancak sağ tarafı tamamlanınca (3 mum sonra) kullanılır; 1H/4H değerleri o mum kapanınca 15m'ye aktarılır.
+- `backtest.lookahead_check` t anındaki puanı, t sonrası veri silinerek yeniden hesaplar; sonuç aynı olmalı.
+- Rastgele (trendsiz) veride sistemin negatif beklenti vermesi kontrol edildi.
+- Hayatta kalma yanlılığı: sadece bugün listede olan kontratlar test edilir — sonuçlar iyimserdir.
+- OI/funding/emir defteri geçmişi olmadığı için backtest teknik puanı (85) 100'e ölçekleyerek test eder.
 
-`app.py` bir web sitesi: sinyalleri MEXC'den canlı hesaplar, grafik çizer, backtest'i tek tuşla çalıştırır.
-
-**Kendi bilgisayarında aç:**
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-Tarayıcıda `http://localhost:8501` adresi açılır.
-
-**Siteyi canlıya alma (ücretsiz, her yerden erişilebilir link):**
-
-*Yol A — Streamlit Community Cloud (en kolayı):*
-1. github.com'da ücretsiz hesap aç → "New repository" → isim ver (örn. `mexc-sinyal`) → oluştur.
-2. Repo sayfasında "uploading an existing file" linkine tıkla, `mexc_bot` klasörünün İÇİNDEKİ bütün dosyaları sürükle → "Commit changes".
-3. share.streamlit.io adresine gir, GitHub ile giriş yap → "Create app" → repoyu seç, Main file: `app.py` → "Deploy".
-4. Birkaç dakika sonra `https://....streamlit.app` linkin hazır.
-
-*Yol B — Render, Frankfurt sunucusu (A'da MEXC bağlantı hatası alırsan):*
-Streamlit Cloud sunucuları ABD'de ve MEXC bazı ülkelerden gelen istekleri engelleyebiliyor. Öyle olursa:
-1. render.com'da GitHub ile giriş yap → "New" → "Blueprint" → aynı repoyu seç.
-2. Render, repodaki `render.yaml` dosyasını okuyup siteyi Frankfurt'ta kurar. Link `https://....onrender.com` olur.
-3. Ücretsiz planda site bir süre ziyaret edilmezse uyur; ilk açılış 30-60 saniye sürebilir.
-
-Not: Link herkese açıktır ama içinde şifre ya da API anahtarı yoktur, sadece herkese açık fiyat verisini gösterir.
-
-## 1. Backtest (komut satırından)
-
-```bash
-python backtest.py --refresh   # MEXC'den veriyi indirir (ilk sefer birkaç dakika sürer)
-python backtest.py             # sonraki çalıştırmalarda önbellekten okur
-python backtest.py --grid      # parametre sağlamlık tablosu
-```
-
-Çıktılar:
-- Ekranda tüm dönem, in-sample ve **out-of-sample** metrikleri, ayrıca BTC al-tut karşılaştırması
-- `backtest_sonuc.png`: sermaye eğrisi ve düşüş grafiği
-- `islemler.csv`: her işlem tek tek
-
-**Sonuçları nasıl okumalısın:**
-- Asıl bakılacak yer OUT-OF-SAMPLE bölümü. In-sample'da harika görünüp out-of-sample'da çöküyorsa strateji geçmişe uydurulmuş demektir.
-- 30'dan az işlem varsa sonuç güvenilir değildir.
-- Trend stratejilerinde kazanma oranının %35–45 civarında olması normaldir. Önemli olan "ort. kazanç / ort. kayıp" oranının 2'nin üstünde olması.
-- `--grid` tablosunda tek bir hücre parlıyor, komşuları kötüyse o parametreye güvenme. Geniş bir iyi bölge (plato) arıyoruz.
-- Sadece bugün listede olan coinler test ediliyor. Batıp listeden kalkanlar hesaba girmediği için gerçek sonuçlar backtest'ten daha kötü olacaktır.
-
-## 2. Sinyal botu
-
-```bash
-python signal_bot.py
-```
-
-Telegram'a göndermek için:
-1. Telegram'da @BotFather ile bot oluştur, token'ı al.
-2. Botuna bir mesaj at, sonra `https://api.telegram.org/bot<TOKEN>/getUpdates` adresinden `chat.id` değerini bul.
-3. Ortam değişkenlerini ayarla:
-   - Windows: `setx TELEGRAM_BOT_TOKEN "..."` ve `setx TELEGRAM_CHAT_ID "..."`
-   - Mac/Linux: `export TELEGRAM_BOT_TOKEN=...` ve `export TELEGRAM_CHAT_ID=...`
-
-Elindeki coinleri `positions.json` dosyasına yazarsan bot onlar için çıkış sinyali ve güncel stop seviyesi verir (`positions.example.json` dosyasına bak).
-
-**Otomatik çalıştırma:** Günlük mumlar 03:00 TSİ'de (00:00 UTC) kapanır. Botu her gün 03:05'te çalıştır:
-- Windows: Görev Zamanlayıcı → "python signal_bot.py"
-- Mac/Linux: `crontab -e` → `5 0 * * * cd /yol/mexc_bot && python signal_bot.py` (sunucu saati UTC ise)
-
-## Önerilen yol haritası
-
-1. Backtest'i çalıştır ve sonuçları birlikte yorumlayalım.
-2. Out-of-sample makulse: 1–2 ay boyunca sinyalleri sadece kağıt üzerinde takip et (paper trading).
-3. Sinyaller backtest'le tutarlı çıkarsa sonraki adımı o zaman konuşuruz.
+## Kontrol edilemeyenler
+Likidasyon verisi, taker buy/sell hacmi, long/short oranı, haber/manipülasyon riski. Sinyal kartında belirtilir.

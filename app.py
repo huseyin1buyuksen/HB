@@ -1,262 +1,261 @@
 """
-MEXC altcoin sinyal sitesi (Streamlit) — LONG + SHORT.
-Yerelde:   streamlit run app.py
+QUANT FUTURES — MEXC USDT-M LONG/SHORT sinyal paneli (Streamlit).
+Yerelde:  streamlit run app.py
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+import backtest as B
 import config as C
 import data as D
-import signals as SG
-import strategy as S
+import indicators as I
+import scanner as SC
 
-st.set_page_config(page_title="MEXC Sinyal Paneli", page_icon="📈", layout="wide")
-TFS = ["15m", "1h", "4h", "1d"]
+st.set_page_config(page_title="Quant Futures · MEXC", page_icon="📈", layout="wide")
 
-# ---------------------------------------------------------------- veri katmanı (önbellekli)
 
+# ---------------------------------------------------------------- veri (önbellekli)
 
 @st.cache_resource(show_spinner=False)
 def exchange():
     return D.get_exchange()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def universe(top_n: int) -> list[str]:
-    C.TOP_N = top_n
-    return D.pick_universe(exchange())
+@st.cache_resource(show_spinner=False)
+def oi_store():
+    return {}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def universe(n: int):
+    syms, tickers = D.pick_universe(exchange(), n)
+    return syms, {s: tickers.get(s) for s in syms}
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def recent(symbol: str, bars: int, tf: str) -> pd.DataFrame:
-    C.TIMEFRAME = tf
-    return D.fetch_ohlcv(exchange(), symbol, limit_bars=bars)
+def candles(sym: str, tf: str, bars: int) -> pd.DataFrame:
+    return D.fetch_ohlcv(exchange(), sym, tf, bars)
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
-def history(symbol: str, tf: str, start: str) -> pd.DataFrame:
-    C.TIMEFRAME = tf
-    return D.fetch_ohlcv(exchange(), symbol, since=start)
-
-
-def parse_positions(text: str) -> dict:
-    """Her satır: 'SOL LONG 2026-11-14 10:30' veya 'ETH SHORT 2026-11-14' (yön ve tarih isteğe bağlı)."""
-    out = {}
-    for line in text.splitlines():
-        parts = line.replace(",", " ").split()
-        if not parts:
-            continue
-        sym = parts[0].upper()
-        if "/" not in sym:
-            sym = f"{sym}/{C.QUOTE}"
-        side, rest = "LONG", parts[1:]
-        if rest and rest[0].upper() in ("LONG", "SHORT"):
-            side, rest = rest[0].upper(), rest[1:]
-        out[sym] = {"side": side}
-        if rest:
-            out[sym]["entry_date"] = " ".join(rest)
-    return out
+def history(sym: str, days: int) -> pd.DataFrame:
+    ex = exchange()
+    return D.fetch_ohlcv(ex, sym, C.BASE_TF, since_ms=ex.milliseconds() - days * 86_400_000)
 
 
 # ---------------------------------------------------------------- kenar çubuğu
 
 with st.sidebar:
     st.header("Ayarlar")
-    tf = st.selectbox("Zaman dilimi", TFS, index=TFS.index(C.TIMEFRAME) if C.TIMEFRAME in TFS else 0,
-                      help="15 dakikalık grafik daha çok sinyal üretir ama gürültü ve komisyon etkisi de artar.")
-    top_n = st.slider("Taranacak coin sayısı (hacme göre)", 10, 60, C.TOP_N, 5)
-    btc_filter = st.toggle("BTC filtresi", value=C.USE_BTC_FILTER,
-                           help="Açıksa: long sadece BTC yükselişteyken, short sadece BTC düşüşteyken verilir. "
-                                "Kapalıysa: her coinin kendi kırılımı yeterli (daha çok fırsat, daha çok risk).")
-    st.subheader("Açık pozisyonlarım")
-    pos_text = st.text_area(
-        "Her satıra: coin, yön, giriş zamanı", key="positions", height=110,
-        placeholder="SOL LONG 2026-11-14 10:30\nDOGE SHORT 2026-11-14 11:15",
-        help="Bu coinler için çıkış sinyali ve güncel stop gösterilir. Sayfa yenilenince silinebilir.",
-    )
-    if st.button("🔄 Verileri yenile", use_container_width=True):
-        recent.clear()
-        universe.clear()
-    st.caption("Fiyat verisi dakikada bir yenilenir. Sinyaller sadece KAPANMIŞ mumlardan hesaplanır; "
-               "yeni sinyaller için sayfayı mum kapanışından sonra yenile.")
+    threshold = st.slider("Sinyal eşiği (puan /100)", 50, 95, C.SCORE_THRESHOLD, 5,
+                          help="Doküman: 85. Not: 85 puan, %85 başarı ihtimali demek değildir. Backtest sekmesinde eşikleri karşılaştırabilirsin.")
+    top_n = st.slider("Taranacak kontrat sayısı (24s hacme göre)", 10, 60, C.TOP_N, 5)
+    st.subheader("Risk")
+    capital = st.number_input("Sermaye (USDT, isteğe bağlı)", min_value=0.0, value=0.0, step=100.0,
+                              help="Girilirse pozisyon miktarı kontrat cinsinden hesaplanır.")
+    risk_pct = st.number_input("İşlem başı risk (%)", 0.1, 2.0, C.RISK_PCT * 100, 0.1) / 100
+    daily_loss = st.number_input("Bugünkü gerçekleşen zarar (%)", 0.0, 10.0, 0.0, 0.1,
+                                 help=f"%{C.DAILY_MAX_LOSS_PCT * 100:.0f} limitine ulaşınca yeni sinyal verilmez.")
+    open_risk = st.number_input("Açık pozisyonlarının toplam riski (%)", 0.0, 10.0, 0.0, 0.1,
+                                help=f"Toplam açık risk %{C.MAX_OPEN_RISK_PCT * 100:.0f}'yi geçecekse yeni sinyal verilmez.")
+    if st.button("🔄 Şimdi yeniden tara", use_container_width=True):
+        candles.clear()
+    st.caption("Veri: MEXC USDT-M Futures (herkese açık API). Sinyaller sadece kapanmış 15m mumlardan üretilir; "
+               "yeni sinyal için mum kapanışından (:00, :15, :30, :45) sonra yenile.")
 
-C.TIMEFRAME = tf
-C.USE_BTC_FILTER = btc_filter
-held = parse_positions(pos_text)
+risk_state = {"daily_loss_pct": daily_loss, "open_risk_pct": open_risk, "risk_pct": risk_pct * 100}
 
-st.title("📈 MEXC Altcoin Sinyal Paneli")
-st.caption(f"{tf} grafik · LONG + SHORT · trend + momentum + Donchian kırılımı + ATR stop. "
-           "Bu panel bir test/öğrenme aracıdır, yatırım tavsiyesi değildir.")
+st.title("📈 Quant Futures — MEXC LONG/SHORT")
+st.caption("Çoklu zaman dilimi trend · SMC piyasa yapısı · hacim/OI/funding · momentum · likidite · BTC/ETH uyumu · "
+           "100 puan + zorunlu şartlar. İşlem açmak zorunda değil: kanıt yetersizse İŞLEM YOK. Yatırım tavsiyesi değildir.")
 
-tab_sig, tab_chart, tab_bt, tab_info = st.tabs(["Sinyaller", "Grafik", "Backtest", "Nasıl çalışır?"])
+tab_sig, tab_all, tab_chart, tab_bt, tab_info = st.tabs(["Sinyaller", "Tüm tarama", "Grafik", "Backtest", "Yöntem"])
 
 # ---------------------------------------------------------------- tarama
 
 try:
-    with st.spinner("MEXC verisi taranıyor..."):
-        symbols = universe(top_n)
-        res = SG.scan(lambda s, n: recent(s, n, tf), symbols, held)
+    ex = exchange()
+    symbols, tickers = universe(top_n)
 except Exception as e:
-    st.error(f"MEXC'ye bağlanılamadı: {e}")
+    st.error(f"MEXC Futures'a bağlanılamadı: {e}")
     st.stop()
 
-rows = pd.DataFrame(res["rows"])
-REGIME_TXT = {"BOĞA": "🟢 Yükselişte", "AYI": "🔴 Düşüşte", "NÖTR": "⚪ Yatay"}
+bar = st.progress(0.0, "Taranıyor...")
+out = SC.scan(
+    fetch=lambda s, tf, n: candles(s, tf, n),
+    live_fn=lambda s: D.live_snapshot(ex, s, tickers.get(s), oi_store()),
+    rules_fn=lambda s: D.market_rules(ex, s),
+    symbols=symbols, threshold=threshold, capital=capital or None, risk_pct=risk_pct, risk_state=risk_state,
+    now_ms=ex.milliseconds(), stale_fn=D.is_stale, progress=lambda p, s: bar.progress(p, f"Taranıyor: {s}"),
+)
+bar.empty()
+res = out["results"]
+signals = [r for r in res if r["decision"] != "İŞLEM YOK"]
+last_bar = max((r["bar_time"] for r in res), default=None)
 
 with tab_sig:
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("BTC durumu", REGIME_TXT[res["regime"]],
-              help="BTC EMA üstünde ve momentumu pozitifse yükselişte, tersi düşüşte sayılır.")
-    n_long = int(((rows["Durum"] == "GİRİŞ") & (rows["Yön"] == "LONG")).sum()) if len(rows) else 0
-    n_short = int(((rows["Durum"] == "GİRİŞ") & (rows["Yön"] == "SHORT")).sum()) if len(rows) else 0
-    c2.metric("🟢 Long sinyali", n_long)
-    c3.metric("🔴 Short sinyali", n_short)
-    c4.metric("Son kapanan mum (UTC)", f"{res['bar_time']:%d.%m %H:%M}")
+    c1.metric("🟢 LONG", sum(r["decision"] == "LONG" for r in signals))
+    c2.metric("🔴 SHORT", sum(r["decision"] == "SHORT" for r in signals))
+    c3.metric("BTC 1H trend", {1: "Yukarı", -1: "Aşağı", 0: "Kararsız"}[out["btc_dir"]])
+    c4.metric("Son kapanan 15m mum", f"{(last_bar + pd.Timedelta(minutes=15) + pd.Timedelta(hours=3)):%H:%M} TSİ" if last_bar is not None else "—")
+    if risk_state["daily_loss_pct"] >= C.DAILY_MAX_LOSS_PCT * 100:
+        st.error("Günlük maksimum zarar limitine ulaşıldı: bugün yeni sinyal verilmez.")
+    if not signals:
+        st.info(f"Şu an {len(res)} kontrattan hiçbiri tüm zorunlu şartları ve {threshold} puan eşiğini sağlamıyor → **İŞLEM YOK**. "
+                "Bu normaldir; sistem fırsat kovalamaz, kanıt bekler. En yakın adaylar aşağıda.")
+    for r in sorted(signals, key=lambda r: -r["score"]):
+        with st.container(border=True):
+            st.markdown(f"### {'🟢' if r['decision'] == 'LONG' else '🔴'} {r['symbol'].split(':')[0]} — {r['decision']} · {r['score']:.0f}/100")
+            st.code(SC.card(r, risk_pct), language=None)
 
-    if btc_filter and res["regime"] == "NÖTR":
-        st.info("BTC filtresi açık ve BTC yatayda: şu an yeni giriş verilmiyor. Filtreyi soldan kapatabilirsin.")
+    near = sorted([r for r in res if r["decision"] == "İŞLEM YOK"], key=lambda r: (len(r["failed"]) + len(r["blockers"]), -r["score"]))[:5]
+    if near:
+        st.subheader("👀 En yakın adaylar (henüz İŞLEM YOK)")
+        for r in near:
+            with st.expander(f"{r['symbol'].split(':')[0]} · {r['side']} · {r['score']:.0f}/100 · eksik şart: {len(r['failed']) + len(r['blockers'])}"):
+                st.code(SC.card(r, risk_pct), language=None)
 
-    def show(df: pd.DataFrame, title: str, empty: str):
-        if title:
-            st.subheader(title)
-        if df.empty:
-            st.caption(empty)
-            return
-        st.dataframe(
-            df[["Coin", "Yön", "Durum", "Not", "Kapanış", "Stop", "Momentum", "Kırılıma uzaklık", "Ort. hacim (USDT)"]],
-            hide_index=True, use_container_width=True,
-            column_config={
-                "Kapanış": st.column_config.NumberColumn(format="%.6g"),
-                "Stop": st.column_config.NumberColumn(format="%.6g"),
-                "Momentum": st.column_config.NumberColumn(f"Momentum ({C.MOMENTUM_LOOKBACK} mum)", format="percent"),
-                "Kırılıma uzaklık": st.column_config.NumberColumn(format="percent"),
-                "Ort. hacim (USDT)": st.column_config.NumberColumn("Ort. hacim / mum", format="compact"),
-            },
-        )
-
-    if len(rows):
-        if held:
-            show(rows[rows.Coin.isin(held)], "📌 Açık pozisyonlarım", "")
-        show(rows[(rows.Durum == "GİRİŞ") & (rows.Yön == "LONG")], "🟢 Long sinyalleri", "Şu an long sinyali yok.")
-        show(rows[(rows.Durum == "GİRİŞ") & (rows.Yön == "SHORT")], "🔴 Short sinyalleri", "Şu an short sinyali yok.")
-        show(rows[rows.Durum.isin(["İZLE", "FİLTRELENDİ"])], "👀 İzleme listesi (kırılıma yakın)", "Kırılıma yakın coin yok.")
-        with st.expander(f"Taranan tüm coinler ({len(rows)})"):
-            show(rows, "", "")
-    if res["errors"]:
-        with st.expander(f"Veri alınamayan coinler ({len(res['errors'])})"):
-            st.write("\n".join(res["errors"]))
-
-# ---------------------------------------------------------------- grafik
+with tab_all:
+    rows = [{"Kontrat": r["symbol"].split(":")[0], "Karar": r["decision"], "En iyi yön": r["side"], "Puan": round(r["score"]),
+             "Teknik /85": round(r["tech"]), "Trend /20": r["comps"]["trend"], "Yapı /20": r["comps"]["yapi"],
+             "Momentum /15": r["comps"]["momentum"], "BTC/ETH /10": r["comps"]["piyasa"],
+             "Eksik şart": len(r["failed"]) + len(r["blockers"]),
+             "İlk eksik": (r["blockers"] + r["failed"])[0] if (r["blockers"] + r["failed"]) else "—"} for r in res]
+    st.dataframe(pd.DataFrame(rows).sort_values(["Karar", "Eksik şart", "Puan"], ascending=[True, True, False]),
+                 hide_index=True, use_container_width=True)
+    if out["errors"]:
+        with st.expander(f"Veri alınamayan kontratlar ({len(out['errors'])})"):
+            st.write("\n".join(out["errors"]))
 
 with tab_chart:
-    choices = [r["Coin"] for r in res["rows"]]
-    if choices:
-        sym = st.selectbox("Coin", choices)
-        df = res["frames"][sym].tail(150)
+    if res:
+        pick = st.selectbox("Kontrat", [r["symbol"] for r in sorted(res, key=lambda r: -r["score"])])
+        r = next(x for x in res if x["symbol"] == pick)
+        f = r["features"].tail(160)
         fig = go.Figure()
-        fig.add_candlestick(x=df.index, open=df.open, high=df.high, low=df.low, close=df.close, name=sym,
+        fig.add_candlestick(x=f.index, open=f.open, high=f.high, low=f.low, close=f.close, name="15m",
                             increasing_line_color="#1a7f37", decreasing_line_color="#cf222e")
-        fig.add_scatter(x=df.index, y=df.ema, name=f"EMA {C.TREND_EMA}", line=dict(color="#1f6feb", width=1.5))
-        fig.add_scatter(x=df.index, y=df.hh, name=f"{C.BREAKOUT_LOOKBACK} mum zirvesi (long giriş)",
-                        line=dict(color="#1a7f37", width=1, dash="dot"))
-        fig.add_scatter(x=df.index, y=df.lo, name=f"{C.BREAKOUT_LOOKBACK} mum dibi (short giriş)",
-                        line=dict(color="#cf222e", width=1, dash="dot"))
-        L, Sh = df[df.entry_long], df[df.entry_short]
-        fig.add_scatter(x=L.index, y=L.low * 0.995, mode="markers", name="Long sinyali",
-                        marker=dict(symbol="triangle-up", size=10, color="#1a7f37"))
-        fig.add_scatter(x=Sh.index, y=Sh.high * 1.005, mode="markers", name="Short sinyali",
-                        marker=dict(symbol="triangle-down", size=10, color="#cf222e"))
-        fig.update_layout(height=560, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10),
-                          legend=dict(orientation="h", y=1.08))
+        for col, nm, colr in (("ema21", "EMA21", "#8250df"), ("ema50", "EMA50", "#1f6feb"), ("vwap", "VWAP", "#bf8700")):
+            fig.add_scatter(x=f.index, y=f[col], name=nm, line=dict(color=colr, width=1.2))
+        fig.add_scatter(x=f.index, y=f.sh, name="Son swing tepe", line=dict(color="#57606a", width=1, dash="dot"))
+        fig.add_scatter(x=f.index, y=f.sl, name="Son swing dip", line=dict(color="#57606a", width=1, dash="dash"))
+        for P, sym_, colr, y in (("L", "triangle-up", "#1a7f37", f.low * 0.997), ("S", "triangle-down", "#cf222e", f.high * 1.003)):
+            m = f[f"{P}_gates_ok"]
+            fig.add_scatter(x=f.index[m], y=y[m], mode="markers", name=f"{'LONG' if P == 'L' else 'SHORT'} şartları",
+                            marker=dict(symbol=sym_, size=11, color=colr))
+        if "plan" in r:
+            p = r["plan"]
+            fig.add_hline(y=p["stop"], line_color="#cf222e", annotation_text="STOP")
+            for k, (px, _, _) in enumerate(p["tps"]):
+                fig.add_hline(y=px, line_color="#1a7f37", line_dash="dot", annotation_text=f"TP{k + 1}")
+        fig.update_layout(height=600, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10),
+                          legend=dict(orientation="h", y=1.06))
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Yeşil üçgen: geçmişteki long sinyalleri · Kırmızı üçgen: geçmişteki short sinyalleri.")
+        st.caption("Üçgenler: geçmişte tüm zorunlu teknik şartların oluştuğu mumlar (puan eşiği ve canlı veri hariç).")
 
 # ---------------------------------------------------------------- backtest
 
 with tab_bt:
-    import backtest as B
-
-    start = D.history_start()
-    st.write(f"Stratejiyi {start} tarihinden bugüne, {tf} grafikte, taranan {len(symbols)} coin üzerinde "
-             f"LONG + SHORT test eder. Komisyon %{C.FEE_RATE * 100:.2f} + kayma %{C.SLIPPAGE * 100:.2f} (her yön). "
-             f"Son %{int(C.OUT_OF_SAMPLE_FRACTION * 100)} dönem out-of-sample olarak ayrıca raporlanır.")
-    st.info("Sadece bugün listede olan coinler test edilir; short'ta fonlama ücreti ve kaldıraç hesaba katılmaz. "
-            "Bu yüzden sonuçlar gerçeğe göre iyimserdir.")
-    if st.button("▶️ Backtest'i çalıştır (birkaç dakika sürebilir)"):
-        hist, prog = {}, st.progress(0.0, "Geçmiş veri indiriliyor...")
-        for i, s in enumerate(symbols + [C.REGIME_SYMBOL]):
+    st.write("Stratejiyi MEXC Futures 15m geçmiş verisinde test eder: **train / validation / out-of-sample** ayrımı, "
+             "**walk-forward**, eşik optimizasyonu, rejim (boğa/ayı/yatay) ve yön kırılımı, komisyon + kayma + funding dahil.")
+    cc1, cc2 = st.columns(2)
+    days = cc1.slider("Gün", 30, 730, C.BT_DAYS_DEFAULT, 30,
+                      help="Doküman en az 2 yıl ister. Bulut sunucuda uzun testler yavaştır; 730 gün için bilgisayarında "
+                           "`python backtest.py --days 730 --coins 20` önerilir.")
+    ncoins = cc2.slider("Coin sayısı", 3, 30, C.BT_COINS_DEFAULT)
+    with st.expander("Varsayımlar"):
+        st.markdown(B.__doc__)
+    if st.button("▶️ Backtest'i çalıştır"):
+        syms = symbols[:ncoins]
+        prog = st.progress(0.0, "Geçmiş veri indiriliyor...")
+        hist = {}
+        allsyms = [C.BTC, C.ETH] + syms
+        for i, s in enumerate(allsyms):
             try:
-                hist[s] = history(s, tf, start)
-            except Exception:
-                pass
-            prog.progress((i + 1) / (len(symbols) + 1), f"İndiriliyor: {s}")
+                hist[s] = history(s, days)
+            except Exception as e:
+                st.warning(f"{s}: {e}")
+            prog.progress((i + 1) / len(allsyms), f"İndiriliyor: {s}")
         prog.empty()
-        btc = hist.pop(C.REGIME_SYMBOL)
-        hist = {s: d for s, d in hist.items() if len(d) > 100}
-        with st.spinner("Simülasyon çalışıyor..."):
-            eq, tr, _ = B.run_backtest(hist, btc)
-        cut = eq.index[int(len(eq) * (1 - C.OUT_OF_SAMPLE_FRACTION))]
+        btc, eth = hist.pop(C.BTC), hist.pop(C.ETH, None)
+        hist = {s: d for s, d in hist.items() if s not in (C.BTC, C.ETH)}
+        with st.spinner("Geleceği görme kontrolü..."):
+            ok, bad = B.lookahead_check(next(iter(hist.values())), btc, eth, points=4)
+        (st.success if ok else st.error)("Geleceği görme kontrolü: " + ("GEÇTİ — t anındaki puan, t sonrası veri silinince değişmiyor."
+                                                                         if ok else f"SORUN: {bad}"))
+        with st.spinner("Göstergeler ve simülasyon..."):
+            rep = B.run(B.build_all(hist, btc, eth))
+        st.session_state["bt"] = rep
 
-        parts = {
-            "Tüm dönem": (eq, tr),
-            "In-sample": (eq[:cut], tr[tr.exit_time <= cut] if len(tr) else tr),
-            "Out-of-sample": (eq[cut:], tr[tr.exit_time > cut] if len(tr) else tr),
-        }
-        if len(tr):
-            parts["Sadece LONG"] = (eq, tr[tr.side == "LONG"])
-            parts["Sadece SHORT"] = (eq, tr[tr.side == "SHORT"])
-        mt = pd.DataFrame({k: B.metrics(e, t) for k, (e, t) in parts.items()})
-        for k in ("Sadece LONG", "Sadece SHORT"):  # bu sütunlarda sermaye metrikleri anlamsız
-            if k in mt:
-                mt.loc[["Toplam getiri", "Yıllık getiri (CAGR)", "Maks. düşüş", "Sharpe"], k] = float("nan")
-        pct = ["Toplam getiri", "Yıllık getiri (CAGR)", "Maks. düşüş", "Kazanma oranı"]
-        shown = mt.copy().astype(object)
-        for r in mt.index:
-            shown.loc[r] = ["—" if pd.isna(v) else (f"{v:+.1%}" if r in pct else (f"{int(v)}" if r == "İşlem sayısı" else f"{v:.2f}"))
-                            for v in mt.loc[r]]
-        st.subheader("Sonuçlar")
-        st.dataframe(shown, use_container_width=True)
-        if len(parts["Out-of-sample"][1]) < 30:
-            st.warning("Out-of-sample dönemde 30'dan az işlem var; sonuç istatistiksel olarak güvenilir değil.")
-        bh = B.buy_hold(btc, eq)
-        fig = go.Figure()
-        fig.add_scatter(x=eq.index, y=eq.values, name="Strateji", line=dict(color="#1f6feb", width=2))
-        fig.add_scatter(x=bh.index, y=bh.values, name="BTC al-tut", line=dict(color="#999", width=1.3))
-        fig.add_vline(x=cut, line_dash="dash", line_color="#d29922")
-        fig.update_layout(height=420, yaxis_title="Sermaye (USDT)",
-                          margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", y=1.08))
-        st.plotly_chart(fig, use_container_width=True)
-        if len(tr):
-            st.subheader("İşlemler")
-            st.dataframe(tr.sort_values("exit_time", ascending=False), hide_index=True, use_container_width=True,
-                         column_config={"ret": st.column_config.NumberColumn("Getiri", format="percent"),
-                                        "pnl": st.column_config.NumberColumn("Kâr/zarar (USDT)", format="%.2f")})
+    rep = st.session_state.get("bt")
+    if rep:
+        st.write(f"Dönem: {rep['start']:%Y-%m-%d} → {rep['end']:%Y-%m-%d} · aday sinyal: {rep['n_candidates']}")
+        if "threshold" not in rep:
+            st.warning("Bu dönemde zorunlu şartları sağlayan aday sinyal oluşmadı.")
+        else:
+            def show_metrics(d):
+                df = pd.DataFrame(d)
+                return df.apply(lambda col: col.map(lambda v: f"{v:.3f}" if isinstance(v, (float, np.floating)) else v))
+            st.subheader(f"Train / Validation / Out-of-sample (eşik train'de seçildi: {rep['threshold']:.0f})")
+            st.dataframe(show_metrics(rep["splits"]), use_container_width=True)
+            st.subheader("Walk-forward")
+            st.dataframe(rep["walk_forward"], hide_index=True, use_container_width=True)
+            st.write("Walk-forward toplam:", {k: (round(v, 3) if isinstance(v, (float, np.floating)) else v)
+                                              for k, v in rep["walk_forward_total"].items()})
+            st.subheader("Eşik duyarlılığı (tüm dönem) — plato mu, tek tepe mi?")
+            st.dataframe(rep["sweep_all"], hide_index=True, use_container_width=True)
+            if "by_regime" in rep:
+                cA, cB = st.columns(2)
+                cA.subheader("Rejime göre")
+                cA.dataframe(show_metrics(rep["by_regime"].T).T, use_container_width=True)
+                cB.subheader("Yöne göre")
+                cB.dataframe(show_metrics(rep["by_side"].T).T, use_container_width=True)
+                st.subheader("Coin bazında (dayanıklılık)")
+                st.dataframe(show_metrics(rep["by_symbol"].T).T, use_container_width=True)
+                t = rep["trades"].sort_values("exit_time")
+                fig = go.Figure()
+                fig.add_scatter(x=t.exit_time, y=t.R.cumsum(), name="Kümülatif R", line=dict(color="#1f6feb", width=2))
+                for bnd in rep["split_bounds"][1:-1]:
+                    fig.add_vline(x=bnd, line_dash="dash", line_color="#d29922")
+                fig.update_layout(height=380, yaxis_title="Kümülatif R", margin=dict(l=10, r=10, t=30, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(t, hide_index=True, use_container_width=True)
+            st.caption("Hayatta kalma yanlılığı: sadece bugün listede olan kontratlar test edilir. OI/funding/emir defteri "
+                       "puanlarının geçmişi yoktur; eşik teknik puanın 100'e ölçeklenmiş hali üzerinde test edilir. "
+                       "Backtest sonucu canlı performans garantisi değildir.")
 
-# ---------------------------------------------------------------- açıklama
+# ---------------------------------------------------------------- yöntem
 
 with tab_info:
     st.markdown(f"""
-**LONG girişi (mum kapanışında, hepsi aynı anda):**
-coin {C.TREND_EMA} EMA'nın üstünde · {C.MOMENTUM_LOOKBACK} mumluk getiri pozitif ·
-kapanış önceki {C.BREAKOUT_LOOKBACK} mumun **zirvesini** kırıyor · yeterli hacim
+### Puanlama (100)
+| Kriter | Maks. | Nasıl hesaplanır |
+|---|---|---|
+| Çoklu zaman dilimi trend | 20 | 4H ve 1H EMA21/50 yönü, 15m EMA9>21>50 dizilimi, 1H ADX>20 ve DI yönü |
+| Piyasa yapısı / SMC | 20 | HH+HL (LH+LL) yapı, BOS/CHoCH tetikleyicisi, likidite süpürmesi, FVG, karşı seviyeye ≥1 ATR alan |
+| Hacim + OI | 15 | Göreli hacim (10) · funding kalabalık değil (3) · OI artışı (2, önceki taramaya göre) |
+| Momentum | 15 | RSI14 bölgesi, RSI7, MACD histogram ve kesişim, Supertrend(10,3) |
+| Likidite / emir defteri | 10 | Spread, ±%0.5 derinlik, defter dengesizliği |
+| BTC/ETH uyumu | 10 | BTC ve ETH 1H trendi, BTC son 1 saat |
+| Volatilite + R/R | 10 | ATR% bandı, Bollinger genişlemesi, VWAP tarafı, net R/R ≥ 2 |
 
-**SHORT girişi:** coin {C.TREND_EMA} EMA'nın altında · {C.MOMENTUM_LOOKBACK} mumluk getiri negatif ·
-kapanış önceki {C.BREAKOUT_LOOKBACK} mumun **dibini** kırıyor · yeterli hacim
+### Zorunlu şartlar (biri bile yoksa İŞLEM YOK)
+4H veya 1H trend aynı yönde · 15m yapı (HH/HL ya da CHoCH) · mum kapanışıyla BOS tetikleyicisi · RSI/MACD desteği ·
+hacim ortalamanın üstünde · BTC 1H ters yönde değil · yapısal stop {C.STOP_MIN_ATR}–{C.STOP_MAX_ATR} ATR · net R/R ≥ {C.MIN_NET_RR} ·
+spread ≤ %{C.MAX_SPREAD_PCT} · funding aşırı değil · yeterli derinlik · veri güncel · günlük ve toplam risk limitleri.
 
-**BTC filtresi:** {"açık — long sadece BTC yükselişte, short sadece BTC düşüşteyken" if btc_filter else "kapalı — BTC'ye bakılmaz, her coinin kendi kırılımı yeterli"}.
+### Entry / Stop / TP
+Entry: kırılan seviye ile kapanış arası limit bölge; alternatif: sonraki mumda piyasa emri. Stop: son doğrulanmış swing ± {C.STOP_ATR_BUFFER} ATR.
+TP1/TP2/TP3 ≈ net 1R/2R/3R; karşıdaki likidite seviyesi (önceki gün/hafta yüksek-düşük, son swing) önce gelirse hedef onun önüne çekilir.
+Kısmi çıkış %30/%40/%30. Miktar ≈ risk tutarı / (|giriş − stop| + birim maliyet), kontrat adımına aşağı yuvarlanır.
 
-**Çıkış:** LONG'da kapanış önceki {C.EXIT_LOOKBACK} mumun dibinin altına, SHORT'ta zirvesinin üstüne çıkarsa;
-ya da iz süren ATR stop'u ({C.ATR_STOP_MULT}×ATR) kapanışla geçerse.
-
-**Risk:** stop'a kadar olan kayıp sermayenin %{C.RISK_PER_TRADE * 100:.0f}'i, tek coine en fazla
-%{C.MAX_POSITION_PCT * 100:.0f}, aynı anda en fazla {C.MAX_OPEN_POSITIONS} pozisyon.
-
-**Short notu:** Spot piyasada short açılmaz; short için MEXC vadeli (futures) gerekir. Vadelide kaldıraç,
-fonlama ücreti ve likidasyon riski vardır, backtest bunları hesaba katmaz.
-
-**15 dakikalık grafik notu:** Kısa zaman diliminde sinyal sayısı artar ama sahte kırılımlar ve komisyonun
-payı da artar. Hangi zaman diliminin daha iyi çalıştığını Backtest sekmesinde karşılaştırabilirsin.
+### Kontrol EDİLEMEYEN kalemler (bilerek puan verilmez)
+Likidasyon verisi (güvenilir ücretsiz kaynak yok) · taker buy/sell hacmi ve long/short oranı (MEXC herkese açık API'de yok;
+mum yönüne göre hacim payı kullanılır) · haber/manipülasyon riski · order block (kural tanımı tartışmalı olduğu için puana katılmadı).
+OI değişimi yalnızca site açıkken önceki taramayla karşılaştırılabilir.
 """)
