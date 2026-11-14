@@ -24,13 +24,20 @@ def is_usdt_perp(m: dict) -> bool:
     return bool(m and m.get("swap") and m.get("linear") and m.get("quote") == C.QUOTE and m.get("active", True))
 
 
+def is_tradfi(m: dict) -> bool:
+    """MEXC hisse/emtia (TradFi) kontratları: kontrat bilgisindeki 'conceptPlate' etiketlerinden tanınır."""
+    plates = " ".join(str(p) for p in ((m.get("info") or {}).get("conceptPlate") or [])).lower()
+    return any(k in plates for k in ("stock", "tradfi", "commodit", "forex", "metal", "index"))
+
+
 def pick_universe(ex, top_n: int | None = None) -> tuple[list[str], dict]:
     """24s USDT hacmine göre en büyük vadeli kontratlar. Dönüş: semboller, ticker sözlüğü."""
     tickers = ex.fetch_tickers(params={"type": C.MARKET_TYPE})
     rows = []
     for sym, t in tickers.items():
         m = ex.markets.get(sym)
-        if not is_usdt_perp(m) or m["base"] in C.EXCLUDE_BASES or m["base"].endswith(C.EXCLUDE_SUFFIXES):
+        if (not is_usdt_perp(m) or m["base"] in C.EXCLUDE_BASES or m["base"].endswith(C.EXCLUDE_SUFFIXES)
+                or is_tradfi(m)):
             continue
         rows.append((sym, quote_volume(t)))
     rows.sort(key=lambda r: r[1], reverse=True)
