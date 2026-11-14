@@ -181,7 +181,7 @@ def _score_side(f: pd.DataFrame, name: str, sd: int):
     f[f"{P}_g_btc"] = ~(f["btc_dir"] == -sd)
     f[f"{P}_g_stop"] = valid_risk
     f[f"{P}_g_rr"] = valid_risk & (rr_net >= C.MIN_NET_RR)
-    gates = [g for g in GATE_NAMES]
+    gates = list(C.REQUIRED_GATES)
     f[f"{P}_gates_ok"] = np.logical_and.reduce([f[f"{P}_{g}"].fillna(False).to_numpy(dtype=bool) for g in gates])
     # giriş bölgesi ve iptal seviyesi
     lvl = f["break_level_up"] if L else f["break_level_dn"]
@@ -199,7 +199,7 @@ GATE_TEXT = {
     "g_volume": "Hacim hareketi doğrulamıyor (ortalamanın altında)",
     "g_btc": "BTC 1H trendi işlemle çelişiyor",
     "g_stop": "Stop teknik olarak mantıklı belirlenemiyor (swing çok yakın/uzak)",
-    "g_rr": f"Net risk/getiri yetersiz (< {C.MIN_NET_RR} R)",
+    "g_rr": "Net risk/getiri yetersiz (eşiğin altında)",
 }
 
 
@@ -262,7 +262,7 @@ def decide(f: pd.DataFrame, live: dict, threshold: float | None = None, risk_sta
         P = name[0]
         lp, ldet, missing, blockers = live_score(sd, live)
         total = float(row[f"{P}_tech"]) + lp
-        failed = [GATE_TEXT[g].format(dir="yükseliş" if sd == 1 else "düşüş") for g in GATE_NAMES if not bool(row[f"{P}_{g}"])]
+        failed = [GATE_TEXT[g].format(dir="yükseliş" if sd == 1 else "düşüş") for g in C.REQUIRED_GATES if not bool(row[f"{P}_{g}"])]
         cand = {"side": name, "sd": sd, "P": P, "score": total, "tech": float(row[f"{P}_tech"]), "live": lp,
                 "comps": {k: float(row[f"{P}_{k}"]) for k in ("trend", "yapi", "hacim", "momentum", "piyasa", "vol_rr")} | ldet,
                 "failed": failed, "blockers": blockers, "missing": missing}
@@ -270,7 +270,7 @@ def decide(f: pd.DataFrame, live: dict, threshold: float | None = None, risk_sta
             if risk_state.get("daily_loss_pct", 0) >= C.DAILY_MAX_LOSS_PCT * 100:
                 cand["blockers"].append("Günlük maksimum zarar limiti doldu")
             if risk_state.get("open_risk_pct", 0) + risk_state.get("risk_pct", C.RISK_PCT * 100) > C.MAX_OPEN_RISK_PCT * 100 + 1e-9:
-                cand["blockers"].append("Toplam açık pozisyon riski limiti (%2) aşılır")
+                cand["blockers"].append(f"Toplam açık pozisyon riski limiti (%{C.MAX_OPEN_RISK_PCT * 100:.0f}) aşılır")
         cand["ok"] = not failed and not blockers and total >= threshold
         if best is None or (cand["ok"], -len(cand["failed"]), cand["score"]) > (best["ok"], -len(best["failed"]), best["score"]):
             best = cand

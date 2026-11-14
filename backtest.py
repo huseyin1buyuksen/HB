@@ -7,7 +7,7 @@ Varsayımlar (hepsi raporda yazılır):
 - TP1/TP2/TP3 kısmi çıkışlar %30/%40/%30; TP1 sonrası stop girişe çekilir.
 - 24 saatte (96 mum) sonuçlanmayan işlem kapanışta kapatılır.
 - Komisyon + kayma her iki yönde; funding 8 saatte bir varsayılan oranda.
-- Portföy kuralları: işlem başı %0.5 risk, toplam açık risk %2 (en fazla 4 işlem), günlük -%2 limit, coin başına tek pozisyon.
+- Portföy kuralları: seçili moddaki işlem başı risk, toplam açık risk ve günlük zarar limiti; coin başına tek pozisyon.
 - Canlı verili puanlar (OI/funding, emir defteri) geçmişte yok; eşik teknik puanın 100'e ölçeklenmiş hali üzerinde test edilir.
 
 Kullanım:  python backtest.py --days 730 --coins 20
@@ -22,8 +22,6 @@ import pandas as pd
 import config as C
 import quant as Q
 
-MAX_CONCURRENT = int(round(C.MAX_OPEN_RISK_PCT / C.RISK_PCT))
-DAILY_R_LIMIT = -C.DAILY_MAX_LOSS_PCT / C.RISK_PCT
 
 
 def simulate_signals(sym: str, f: pd.DataFrame, min_score: float) -> list[dict]:
@@ -91,6 +89,8 @@ def portfolio_filter(cands: pd.DataFrame, threshold: float) -> pd.DataFrame:
     """Eşik + portföy kuralları: en fazla MAX_CONCURRENT açık işlem, coin başına tek pozisyon, günlük R limiti."""
     if cands.empty:
         return cands
+    MAX_CONCURRENT = max(1, int(round(C.MAX_OPEN_RISK_PCT / C.RISK_PCT)))
+    DAILY_R_LIMIT = -C.DAILY_MAX_LOSS_PCT / C.RISK_PCT
     c = cands[cands.score >= threshold].sort_values(["entry_time", "score"], ascending=[True, False])
     taken, open_ = [], []
     day_R: dict = {}

@@ -66,7 +66,7 @@ def scan(fetch, live_fn, rules_fn, symbols: list[str], threshold: float, capital
         if clash is not None:
             _demote(r, f"{clash['symbol']} ile yüksek korelasyon (aynı yön) — portföy riski sınırlandı")
         elif len(kept) >= slots:
-            _demote(r, "Toplam açık risk limiti (%2) dolu — daha yüksek puanlı sinyaller öncelikli")
+            _demote(r, f"Toplam açık risk limiti (%{C.MAX_OPEN_RISK_PCT * 100:.0f}) dolu — daha yüksek puanlı sinyaller öncelikli")
         else:
             kept.append(r)
     return {"results": results, "errors": errors, "btc15": btc15, "btc_dir": _btc_dir(btc1h), "scanned_at": pd.Timestamp.now(tz="UTC")}

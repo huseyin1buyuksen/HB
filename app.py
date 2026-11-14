@@ -51,13 +51,20 @@ def history(sym: str, days: int) -> pd.DataFrame:
 
 with st.sidebar:
     st.header("Ayarlar")
-    threshold = st.slider("Sinyal eşiği (puan /100)", 50, 95, C.SCORE_THRESHOLD, 5,
+    mode = st.radio("Mod", list(C.MODES), index=list(C.MODES).index(C.DEFAULT_MODE), horizontal=True,
+                    help="Agresif: eşik 65, hacim ve BTC şartı yok, net R/R ≥ 1.2, işlem başı %1 risk, toplam açık risk %5, "
+                         "günlük zarar limiti %4. Dengeli: dokümandaki kurallar (eşik 85, tüm şartlar, %0.5 risk).")
+    C.apply_mode(mode)
+    if mode == "Agresif":
+        st.warning("Agresif mod: daha çok sinyal ama daha zayıf kurulumlar ve iki kat risk. Kayıp serileri daha derin olur.")
+    threshold = st.slider("Sinyal eşiği (puan /100)", 50, 95, C.SCORE_THRESHOLD, 5, key=f"thr_{mode}",
                           help="Doküman: 85. Not: 85 puan, %85 başarı ihtimali demek değildir. Backtest sekmesinde eşikleri karşılaştırabilirsin.")
     top_n = st.slider("Taranacak kontrat sayısı (24s hacme göre)", 10, 60, C.TOP_N, 5)
     st.subheader("Risk")
     capital = st.number_input("Sermaye (USDT, isteğe bağlı)", min_value=0.0, value=0.0, step=100.0,
                               help="Girilirse pozisyon miktarı kontrat cinsinden hesaplanır.")
-    risk_pct = st.number_input("İşlem başı risk (%)", 0.1, 2.0, C.RISK_PCT * 100, 0.1) / 100
+    risk_pct = st.number_input("İşlem başı risk (%)", 0.1, 3.0, C.RISK_PCT * 100, 0.1, key=f"risk_{mode}") / 100
+    C.RISK_PCT = risk_pct
     daily_loss = st.number_input("Bugünkü gerçekleşen zarar (%)", 0.0, 10.0, 0.0, 0.1,
                                  help=f"%{C.DAILY_MAX_LOSS_PCT * 100:.0f} limitine ulaşınca yeni sinyal verilmez.")
     open_risk = st.number_input("Açık pozisyonlarının toplam riski (%)", 0.0, 10.0, 0.0, 0.1,
@@ -170,6 +177,7 @@ with tab_bt:
     ncoins = cc2.slider("Coin sayısı", 3, 30, C.BT_COINS_DEFAULT)
     with st.expander("Varsayımlar"):
         st.markdown(B.__doc__)
+    st.caption(f"Backtest seçili modla çalışır: **{mode}** (eşik adayları {C.BT_THRESHOLDS}, işlem başı risk %{C.RISK_PCT * 100:.1f}).")
     if st.button("▶️ Backtest'i çalıştır"):
         syms = symbols[:ncoins]
         prog = st.progress(0.0, "Geçmiş veri indiriliyor...")

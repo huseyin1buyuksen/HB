@@ -68,3 +68,27 @@ BT_WF_FOLDS = 4
 
 # ---------------- Telegram ----------------
 # Ortam değişkeni olarak ver: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+# ---------------- Modlar ----------------
+ALL_GATES = ["g_trend", "g_struct", "g_trigger", "g_momentum", "g_volume", "g_btc", "g_stop", "g_rr"]
+REQUIRED_GATES = list(ALL_GATES)
+MODES = {
+    "Agresif": {  # daha çok sinyal, daha büyük risk
+        "SCORE_THRESHOLD": 65, "MIN_NET_RR": 1.2, "RISK_PCT": 0.01, "MAX_OPEN_RISK_PCT": 0.05,
+        "DAILY_MAX_LOSS_PCT": 0.04, "MAX_CORR": 0.95,
+        "REQUIRED_GATES": ["g_trend", "g_struct", "g_trigger", "g_momentum", "g_stop", "g_rr"],  # hacim ve BTC şartı yok
+    },
+    "Dengeli (doküman)": {
+        "SCORE_THRESHOLD": 85, "MIN_NET_RR": 1.5, "RISK_PCT": 0.005, "MAX_OPEN_RISK_PCT": 0.02,
+        "DAILY_MAX_LOSS_PCT": 0.02, "MAX_CORR": 0.85, "REQUIRED_GATES": list(ALL_GATES),
+    },
+}
+DEFAULT_MODE = "Agresif"
+
+
+def apply_mode(name: str):
+    for k, v in MODES[name].items():
+        globals()[k] = list(v) if isinstance(v, list) else v
+
+
+apply_mode(DEFAULT_MODE)
