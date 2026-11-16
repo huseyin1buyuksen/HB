@@ -9,6 +9,9 @@ concurrency:
   group: sinyal-botu
   cancel-in-progress: false
 
+permissions:
+  contents: write
+
 jobs:
   tara:
     runs-on: ubuntu-latest
@@ -38,3 +41,15 @@ jobs:
         with:
           path: state
           key: sinyal-state-${{ github.run_id }}
+      - name: Demo hesabı siteye yayınla (demo-data dalı)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f state/paper.json ]; then
+            mkdir -p /tmp/pub && cp state/paper.json /tmp/pub/ && cd /tmp/pub
+            git init -q -b demo-data
+            git add paper.json
+            git -c user.name="demo-bot" -c user.email="demo-bot@users.noreply.github.com" commit -q -m "demo hesap"
+            git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" demo-data
+          fi
