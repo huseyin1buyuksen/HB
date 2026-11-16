@@ -134,7 +134,7 @@ def send_html(token, chat, text):
             tg("sendMessage", token, chat_id=chat, text=part.replace("<b>", "").replace("</b>", ""))
 
 
-def listen(token, chat, state, ex, seconds: int, capital: float, paper_tick=None, paper_status=None):
+def listen(token, chat, state, ex, seconds: int, capital: float, paper_tick=None, paper_status=None, extra_poll=None):
     """Telegram'dan gelen 'AKE kontrol et' gibi mesajları dinler ve analizle cevaplar (yalnızca sahibinin sohbetinde)."""
     import time
     bases = {m["base"] for m in ex.markets.values() if D.is_usdt_perp(m) and not D.is_tradfi(m)}
@@ -143,13 +143,18 @@ def listen(token, chat, state, ex, seconds: int, capital: float, paper_tick=None
     offset = state.get("offset")
     last_tick = time.time()
     while time.time() < end - 5:
+        if extra_poll:
+            try:
+                extra_poll()
+            except Exception as e:
+                print("ikinci bot hatası:", type(e).__name__)
         if paper_tick and time.time() - last_tick >= 120:
             last_tick = time.time()
             try:
                 paper_tick()
             except Exception as e:
                 print("demo takip hatası:", type(e).__name__, e)
-        wait = int(min(50, max(1, end - time.time() - 5)))
+        wait = int(min(20 if extra_poll else 50, max(1, end - time.time() - 5)))
         try:
             params = {"timeout": wait, "allowed_updates": json.dumps(["message"])}
             if offset:
@@ -220,12 +225,57 @@ def main():
     if not os.path.exists(ppath):
         restore_paper(ppath)
     pst = PP.load(ppath)
+    # ---- ANİ DEMO: pump/dump avcısı için ayrı Telegram botu ve ayrı demo kasa
+    ani_token = os.getenv("TELEGRAM_ANI_TOKEN")
+    ani_chat = os.getenv("TELEGRAM_ANI_CHAT_ID") or state.get("ani_chat")
+    if ani_token and not ani_chat:
+        try:
+            ani_chat = find_chat(ani_token)
+            if ani_chat:
+                tg("sendMessage", ani_token, chat_id=ani_chat,
+                   text="✅ ANİ DEMO bağlandı. Son 4/6/12 saatte sert pump/dump yapan coinlere benzeyen fırsatları ve "
+                        "bu fırsatlara giren ayrı 100$'lık demo kasanın bütün işlemlerini buraya yazacağım. /kasa ile durumu görebilirsin.")
+            else:
+                print("Ani Demo sohbeti bulunamadı: Telegram'da Ani Demo botuna /start yaz.")
+        except Exception as e:
+            print("Ani Demo botuna ulaşılamadı:", type(e).__name__)
+    state["ani_chat"] = ani_chat
+    p2path = os.path.join(os.path.dirname(a.state) if a.state else ".", "paper_ani.json")
+    if not os.path.exists(p2path):
+        restore_paper(p2path, "paper_ani.json")
+    pst2 = PP.load(p2path)
     deadline = time.time() + a.loop if a.loop else 0
 
     def say(msg):
         print(msg, "\n")
         if token and chat:
             send_html(token, chat, html_escape(msg))
+
+    def say2(msg):
+        print("[ANİ]", msg, "\n")
+        if ani_token and ani_chat:
+            send_html(ani_token, ani_chat, html_escape(msg))
+        elif token and chat:
+            send_html(token, chat, html_escape("[ANİ DEMO] " + msg))
+
+    def ani_poll():
+        if not (ani_token and ani_chat):
+            return
+        params = {"timeout": 0, "allowed_updates": json.dumps(["message"])}
+        if state.get("ani_offset"):
+            params["offset"] = state["ani_offset"]
+        for u in tg("getUpdates", ani_token, **params).get("result", []):
+            state["ani_offset"] = u["update_id"] + 1
+            m = u.get("message") or {}
+            if str((m.get("chat") or {}).get("id", "")) != str(ani_chat) or m.get("date", 0) < time.time() - 900:
+                continue
+            t = (m.get("text") or "").lower().strip("/ ")
+            if t in ("kasa", "demo", "durum", "bakiye"):
+                send_html(ani_token, ani_chat, html_escape(PP.status_text(pst2).replace("DEMO KASA", "ANİ DEMO KASA")))
+            else:
+                send_html(ani_token, ani_chat, html_escape(
+                    "ANİ DEMO botu: pump/dump avcısının fırsatlarını ve ayrı demo kasasını yazar.\n/kasa → ani demo kasanın durumu\n"
+                    "Coin analizi için ana bota (HB MEXC Sinyal) coin adını yaz."))
 
     def fetch_5m(sym, since_ms):
         return D.fetch_ohlcv(ex, sym, "5m", since_ms=since_ms)
@@ -238,6 +288,13 @@ def main():
             say(rep)
         PP.snapshot(pst)
         PP.save(ppath, pst)
+        for m in PP.update(pst2, fetch_5m):
+            say2(m)
+        rep = PP.roll_day(pst2)
+        if rep:
+            say2(rep.replace("GÜN SONU RAPORU", "ANİ DEMO GÜN SONU RAPORU"))
+        PP.snapshot(pst2)
+        PP.save(p2path, pst2)
 
     def cycle():
         syms, tickers = D.pick_universe(ex)
@@ -280,7 +337,7 @@ def main():
             pump_hunter()
         except Exception as e:
             print("pump/dump avcısı hatası:", type(e).__name__, e)
-        publish_paper(ppath)
+        publish_paper([ppath, p2path])
 
     def pump_hunter():
         """Agresif mod: son 4/6/12 saatte sert pump/dump yapanlara benzeyen coinlerde tetik gelince fırsat + demo giriş."""
@@ -298,16 +355,16 @@ def main():
             sent.add(key)
             base = c["symbol"].split("/")[0]
             word = "LONG 🟢" if c["side"] == 1 else "SHORT 🔴"
-            say(f"🚀 FIRSAT (pump/dump avcısı, deneysel) — {base}USDT {word}\n\n{M.describe(c)}\n"
+            say2(f"🚀 FIRSAT (pump/dump avcısı, deneysel) — {base}USDT {word}\n\n{M.describe(c)}\n"
                 f"Fiyat: {c['price']:.6g}\nBu strateji henüz kanıtlanmadı; geçmiş isabeti sitede 'Pump/Dump Avcısı' sayfasında ölçülür.")
             sigd = {"symbol": c["symbol"], "decision": "LONG" if c["side"] == 1 else "SHORT", "score": c["score"] * 100}
-            r = run_analysis(ex, c["symbol"], pst["cash"], PP.MAX_LEV, sigd["decision"])
+            r = run_analysis(ex, c["symbol"], pst2["cash"], PP.MAX_LEV, sigd["decision"])
             if r is not None:
-                _, msg = PP.open_position(pst, sigd, r)
-                say(msg)
+                _, msg = PP.open_position(pst2, sigd, r)
+                say2(msg.replace("DEMO İŞLEM AÇILDI", "ANİ DEMO İŞLEM AÇILDI"))
         state["sent"] = sorted(sent)[-500:]
-        PP.snapshot(pst)
-        PP.save(ppath, pst)
+        PP.snapshot(pst2)
+        PP.save(p2path, pst2)
 
     while True:
         try:
@@ -323,7 +380,7 @@ def main():
             end = now + a.listen
         if end - now > 10:
             listen(token, chat, state, ex, int(end - now), a.capital or 100.0, paper_tick=tick,
-                   paper_status=lambda: PP.status_text(pst))
+                   paper_status=lambda: PP.status_text(pst), extra_poll=ani_poll)
         save_state(a.state, state)
         try:
             tick()
@@ -331,20 +388,20 @@ def main():
             print("demo takip hatası:", type(e).__name__, e)
         if not a.loop or time.time() > deadline - 90:
             break
-    publish_paper(ppath)
+    publish_paper([ppath, p2path])
     save_state(a.state, state)
 
 
-PAPER_RAW = "https://raw.githubusercontent.com/{repo}/demo-data/paper.json"
+PAPER_RAW = "https://raw.githubusercontent.com/{repo}/demo-data/{name}"
 
 
-def restore_paper(path):
+def restore_paper(path, name="paper.json"):
     """Önbellek kaybolursa demo hesabı yayınlanan son kopyadan geri yükle."""
     repo = os.getenv("GITHUB_REPOSITORY")
     if not repo:
         return
     try:
-        with urllib.request.urlopen(PAPER_RAW.format(repo=repo), timeout=20) as r:
+        with urllib.request.urlopen(PAPER_RAW.format(repo=repo, name=name), timeout=20) as r:
             data = r.read()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "wb") as f:
@@ -354,17 +411,19 @@ def restore_paper(path):
         print("Demo hesap geri yüklenemedi (ilk çalışma olabilir):", type(e).__name__)
 
 
-def publish_paper(path):
-    """Demo hesabı siteye yayınla: paper.json'u 'demo-data' dalına tek commit olarak yazar."""
+def publish_paper(paths):
+    """Demo hesapları siteye yayınla: json dosyalarını 'demo-data' dalına tek commit olarak yazar."""
     tok, repo = os.getenv("GH_TOKEN"), os.getenv("GITHUB_REPOSITORY")
-    if not (tok and repo and os.path.exists(path)):
+    paths = [p for p in paths if os.path.exists(p)]
+    if not (tok and repo and paths):
         return
     import shutil
     import subprocess
     import tempfile
     d = tempfile.mkdtemp()
-    shutil.copy(path, os.path.join(d, "paper.json"))
-    cmds = [["git", "init", "-q", "-b", "demo-data"], ["git", "add", "paper.json"],
+    for p in paths:
+        shutil.copy(p, os.path.join(d, os.path.basename(p)))
+    cmds = [["git", "init", "-q", "-b", "demo-data"], ["git", "add", "-A"],
             ["git", "-c", "user.name=demo-bot", "-c", "user.email=demo-bot@users.noreply.github.com", "commit", "-q", "-m", "demo hesap"],
             ["git", "push", "-q", "-f", f"https://x-access-token:{tok}@github.com/{repo}.git", "demo-data"]]
     try:

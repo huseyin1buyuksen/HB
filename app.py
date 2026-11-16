@@ -429,14 +429,14 @@ def movers_eval_ui():
 
 # ================================================================= 1b) CANLI DEMO HESAP (paper trading)
 
-PAPER_URL = "https://raw.githubusercontent.com/huseyin1buyuksen/HB/demo-data/paper.json"
+PAPER_URL = "https://raw.githubusercontent.com/huseyin1buyuksen/HB/demo-data/{name}"
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def paper_state():
+def paper_state(name: str = "paper.json"):
     import json
     import urllib.request
-    with urllib.request.urlopen(PAPER_URL + f"?t={pd.Timestamp.now().value // 60_000_000_000}", timeout=15) as r:
+    with urllib.request.urlopen(PAPER_URL.format(name=name) + f"?t={pd.Timestamp.now().value // 60_000_000_000}", timeout=15) as r:
         return json.loads(r.read().decode())
 
 
@@ -446,8 +446,11 @@ def page_paper():
                 'boştaki kasanın %50\'si ile giriş, planlı seviyede %25 ekleme, 10x (likidasyon stoptan önce gelecekse güvenli '
                 'kaldıraç), TP1 %30 · TP2 %40 · TP3 kalan, TP1 sonrası stop girişe. Her işlem Telegram\'a yazılır, gün sonunda '
                 'rapor gelir. Telegram\'da <b>/kasa</b> yazarak anlık durumu görebilirsin.</div>', unsafe_allow_html=True)
+    which = st.radio("Hesap", ["📒 Ana demo (tüm sinyaller)", "🚀 Ani demo (pump/dump avcısı)"], horizontal=True,
+                     help="Ana demo: sinyal tarayıcının her sinyaline girer (HB MEXC Sinyal botu). "
+                          "Ani demo: sadece pump/dump avcısının tetiklenen fırsatlarına girer (Ani Demo botu). İkisinin kasası ayrıdır.")
     try:
-        ps = paper_state()
+        ps = paper_state("paper.json" if which.startswith("📒") else "paper_ani.json")
     except Exception:
         st.info("Demo hesap verisi henüz yayınlanmadı. İlk otomatik çalışmadan sonra (en geç ~15 dk) burada görünür.")
         return
