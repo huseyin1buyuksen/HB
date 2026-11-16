@@ -151,7 +151,7 @@ def listen(token, chat, state, ex, seconds: int, capital: float):
             m = u.get("message") or {}
             cid = str((m.get("chat") or {}).get("id", ""))
             text = (m.get("text") or "").strip()
-            if not text or cid != str(chat) or m.get("date", 0) < started - 120:
+            if not text or cid != str(chat) or m.get("date", 0) < started - 900:
                 continue                      # yalnızca sahibinin yeni mesajları
             if text.lower() in ("/start", "/help", "yardım", "yardim"):
                 send_html(token, chat, html_escape(HELP.format(cap=capital)))
