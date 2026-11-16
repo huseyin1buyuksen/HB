@@ -11,11 +11,12 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   tara:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,12 +30,13 @@ jobs:
           path: state
           key: sinyal-state-${{ github.run_id }}
           restore-keys: sinyal-state-
-      - name: Tara, Telegram'a gönder ve mesajları cevapla (~13 dk)
+      - name: Tara, Telegram'a gönder, demo hesabı yönet ve mesajları cevapla (~5,5 saat)
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CAPITAL: ${{ secrets.CAPITAL }}
-        run: python signal_bot.py --state state/sent.json --listen 780
+        run: python -u signal_bot.py --state state/sent.json --loop 19500
       - name: Durumu kaydet
         if: always()
         uses: actions/cache/save@v4
@@ -53,3 +55,8 @@ jobs:
             git -c user.name="demo-bot" -c user.email="demo-bot@users.noreply.github.com" commit -q -m "demo hesap"
             git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" demo-data
           fi
+      - name: Bir sonraki çalışmayı başlat (kesintisiz zincir)
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run sinyal.yml --ref main -R "${{ github.repository }}"
