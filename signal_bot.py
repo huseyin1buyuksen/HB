@@ -60,7 +60,7 @@ STOP_WORDS = {"USDT", "USDC", "PERP", "KONTROL", "ET", "ANALIZ", "ANALİZ", "ANA
               "NE", "DURUMU", "GIR", "GİR", "KASA", "X", "MI", "MU", "COIN", "LÜTFEN", "LUTFEN", "KRAL", "REIS", "REİS"}
 
 HELP = ("Coin analizi için coinin adını yaz, örnek:\n"
-        "• AKE\n• AKE USDT kontrol et\n• SOL 20x\n• BTC short kasa 200\n\n"
+        "• AKE\n• AKE USDT kontrol et\n• SOL 20x\n• BTC short kasa 200\n• /kasa → demo hesabın durumu\n\n"
         "Varsayılan: kasa {cap:.0f}$, 10x, ilk giriş %50, ekleme %25. Kaldıraç (20x), kasa (kasa 200) ve yön (long/short) yazabilirsin.")
 
 
@@ -86,8 +86,7 @@ def html_escape(x: str) -> str:
     return x.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def analysis_message(ex, sym: str, capital: float, leverage: int, side: str) -> str:
-    import re
+def run_analysis(ex, sym: str, capital: float, leverage: int, side: str):
     import analysis as A
     d15 = D.fetch_ohlcv(ex, sym, "15m", 400)
     h1 = D.fetch_ohlcv(ex, sym, "1h", 1500)
@@ -95,7 +94,7 @@ def analysis_message(ex, sym: str, capital: float, leverage: int, side: str) -> 
     d1 = D.fetch_ohlcv(ex, sym, "1d", 200)
     btc1h = D.fetch_ohlcv(ex, C.BTC, "1h", 300)
     if len(h1) < 120:
-        return f"{sym.split('/')[0]}: yeterli geçmiş veri yok ({len(h1)} adet 1H mum). Yeni listelenmiş olabilir."
+        return None
     try:
         t = ex.fetch_ticker(sym)
     except Exception:
@@ -103,7 +102,15 @@ def analysis_message(ex, sym: str, capital: float, leverage: int, side: str) -> 
     live = D.live_snapshot(ex, sym, t)
     if t and t.get("last"):
         live["last"] = float(t["last"])
-    r = A.analyze(sym, d15, h1, h4, d1, btc1h, live, capital, leverage, 0.5, 0.25, side)
+    return A.analyze(sym, d15, h1, h4, d1, btc1h, live, capital, leverage, 0.5, 0.25, side)
+
+
+def analysis_message(ex, sym: str, capital: float, leverage: int, side: str) -> str:
+    import re
+    import analysis as A
+    r = run_analysis(ex, sym, capital, leverage, side)
+    if r is None:
+        return f"{sym.split('/')[0]}: yeterli geçmiş veri yok. Yeni listelenmiş olabilir."
     base = sym.split("/")[0]
     head = {1: "🟢 LONG eğilimli", -1: "🔴 SHORT eğilimli", 0: "⚪ Net yön yok — BEKLE"}[r["direction"]]
     tf = " · ".join(f"{k} {'▲' if v['dir'] == 1 else '▼' if v['dir'] == -1 else '■'}" for k, v in r["tfs"].items())
@@ -127,14 +134,21 @@ def send_html(token, chat, text):
             tg("sendMessage", token, chat_id=chat, text=part.replace("<b>", "").replace("</b>", ""))
 
 
-def listen(token, chat, state, ex, seconds: int, capital: float):
+def listen(token, chat, state, ex, seconds: int, capital: float, paper_tick=None, paper_status=None):
     """Telegram'dan gelen 'AKE kontrol et' gibi mesajları dinler ve analizle cevaplar (yalnızca sahibinin sohbetinde)."""
     import time
     bases = {m["base"] for m in ex.markets.values() if D.is_usdt_perp(m) and not D.is_tradfi(m)}
     started = time.time()
     end = started + seconds
     offset = state.get("offset")
+    last_tick = time.time()
     while time.time() < end - 5:
+        if paper_tick and time.time() - last_tick >= 120:
+            last_tick = time.time()
+            try:
+                paper_tick()
+            except Exception as e:
+                print("demo takip hatası:", type(e).__name__, e)
         wait = int(min(50, max(1, end - time.time() - 5)))
         try:
             params = {"timeout": wait, "allowed_updates": json.dumps(["message"])}
@@ -153,6 +167,9 @@ def listen(token, chat, state, ex, seconds: int, capital: float):
             text = (m.get("text") or "").strip()
             if not text or cid != str(chat) or m.get("date", 0) < started - 900:
                 continue                      # yalnızca sahibinin yeni mesajları
+            if paper_status and text.lower().strip("/ ") in ("kasa", "demo", "durum", "bakiye"):
+                send_html(token, chat, html_escape(paper_status()))
+                continue
             if text.lower() in ("/start", "/help", "yardım", "yardim"):
                 send_html(token, chat, html_escape(HELP.format(cap=capital)))
                 continue
@@ -219,9 +236,48 @@ def main():
     state["sent"] = sorted(sent)[-500:]
     state["last_run"] = str(pd.Timestamp.now(tz="UTC"))
     save_state(a.state, state)
+
+    # ---- DEMO HESAP: yeni sinyallere sanal giriş + açık pozisyon takibi
+    import paper as PP
+    ppath = os.path.join(os.path.dirname(a.state) if a.state else ".", "paper.json")
+    pst = PP.load(ppath)
+
+    def say(msg):
+        print(msg, "\n")
+        if token and chat:
+            send_html(token, chat, html_escape(msg))
+
+    def fetch_5m(sym, since_ms):
+        return D.fetch_ohlcv(ex, sym, "5m", since_ms=since_ms)
+
+    def tick():
+        for m in PP.update(pst, fetch_5m):
+            say(m)
+        rep = PP.roll_day(pst)
+        if rep:
+            say(rep)
+        PP.snapshot(pst)
+        PP.save(ppath, pst)
+
+    try:
+        tick()
+        for r in sorted(new, key=lambda r: -r["score"]):
+            side = r["decision"]
+            res = run_analysis(ex, r["symbol"], pst["cash"], PP.MAX_LEV, side)
+            if res is None:
+                continue
+            _, msg = PP.open_position(pst, r, res)
+            say(msg)
+        PP.snapshot(pst)
+        PP.save(ppath, pst)
+    except Exception as e:
+        print("demo hesap hatası:", type(e).__name__, e)
+
     if token and chat and a.listen > 0:
-        listen(token, chat, state, ex, a.listen, a.capital or 100.0)
+        listen(token, chat, state, ex, a.listen, a.capital or 100.0, paper_tick=tick,
+               paper_status=lambda: PP.status_text(pst))
         save_state(a.state, state)
+        tick()
 
 
 if __name__ == "__main__":

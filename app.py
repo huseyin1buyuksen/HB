@@ -124,7 +124,7 @@ def pbar(label, p, color, base=None, note=""):
 
 # ---------------------------------------------------------------- sayfa seçimi
 
-PAGES = ["🔍 Coin Analizi", "💰 Demo Kasa", "📡 Sinyal Tarayıcı", "🧪 Backtest", "📘 Yöntem"]
+PAGES = ["🔍 Coin Analizi", "📒 Demo Hesap (canlı)", "💰 Demo Kasa", "📡 Sinyal Tarayıcı", "🧪 Backtest", "📘 Yöntem"]
 qp = st.query_params.get("p", "0") if hasattr(st, "query_params") else "0"
 try:
     default_page = min(max(int(qp), 0), len(PAGES) - 1)
@@ -320,6 +320,90 @@ def page_analysis():
         st.dataframe(pd.DataFrame(lv), hide_index=True, use_container_width=True)
     st.caption(f"Veri: MEXC USDT-M Futures · son kapanan 15m mum {(r['bar_time'] + pd.Timedelta(minutes=15) + pd.Timedelta(hours=3)):%d.%m %H:%M} TSİ. "
                "Olasılıklar geçmişe dayanır ve geleceği garanti etmez. Yatırım tavsiyesi değildir.")
+
+
+# ================================================================= 1b) CANLI DEMO HESAP (paper trading)
+
+PAPER_URL = "https://raw.githubusercontent.com/huseyin1buyuksen/HB/demo-data/paper.json"
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def paper_state():
+    import json
+    import urllib.request
+    with urllib.request.urlopen(PAPER_URL + f"?t={pd.Timestamp.now().value // 60_000_000_000}", timeout=15) as r:
+        return json.loads(r.read().decode())
+
+
+def page_paper():
+    st.markdown("#### 📒 Canlı demo hesap — her sinyale otomatik sanal giriş")
+    st.markdown('<div class="warnbox">Gerçek para ve borsa hesabı yok. Gerçek MEXC fiyatlarıyla sanal 100$ kasa: her yeni sinyalde '
+                'boştaki kasanın %50\'si ile giriş, planlı seviyede %25 ekleme, 10x (likidasyon stoptan önce gelecekse güvenli '
+                'kaldıraç), TP1 %30 · TP2 %40 · TP3 kalan, TP1 sonrası stop girişe. Her işlem Telegram\'a yazılır, gün sonunda '
+                'rapor gelir. Telegram\'da <b>/kasa</b> yazarak anlık durumu görebilirsin.</div>', unsafe_allow_html=True)
+    try:
+        ps = paper_state()
+    except Exception:
+        st.info("Demo hesap verisi henüz yayınlanmadı. İlk otomatik çalışmadan sonra (en geç ~15 dk) burada görünür.")
+        return
+    prices = {}
+    for p in ps["positions"]:
+        try:
+            prices[p["symbol"]] = float(exchange().fetch_ticker(p["symbol"])["last"])
+        except Exception:
+            prices[p["symbol"]] = p.get("last_px", p["avg"])
+    unreal = sum(max(p["side"] * (prices[p["symbol"]] - p["avg"]) * p["qty"], -p["margin"]) for p in ps["positions"])
+    eq = ps["cash"] + sum(p["margin"] for p in ps["positions"]) + unreal
+    start = ps["start"]
+    days = max((pd.Timestamp.now(tz="UTC").value // 10**6 - ps["created"]) / 86_400_000, 0)
+    target = start * 10 ** (min(days, 10) / 10)
+    closed = ps["closed"]
+    wins = [c for c in closed if c["realized"] > 0]
+    k = st.columns(5)
+    k[0].markdown(card("Kasa (anlık)", f"{eq:.2f}$", f"başlangıç {start:.0f}$ · {(eq / start - 1) * 100:+.1f}%",
+                       GREEN if eq >= start else RED), unsafe_allow_html=True)
+    k[1].markdown(card("Hedef yolunda olması gereken", f"{target:.0f}$", f"{days:.1f}. gün · 10 günde 1000$", GOLD), unsafe_allow_html=True)
+    k[2].markdown(card("Açık pozisyon", len(ps["positions"]), f"gerçekleşmemiş {unreal:+.2f}$"), unsafe_allow_html=True)
+    k[3].markdown(card("Kapanan işlem", len(closed), f"kazanan {len(wins)} · kaybeden {len(closed) - len(wins)}"), unsafe_allow_html=True)
+    k[4].markdown(card("İsabet", f"%{len(wins) / len(closed) * 100:.0f}" if closed else "—",
+                       f"toplam {sum(c['realized'] for c in closed):+.2f}$"), unsafe_allow_html=True)
+    curve = ps.get("equity_curve") or []
+    if curve:
+        cv = pd.DataFrame(curve, columns=["t", "eq"])
+        cv["t"] = pd.to_datetime(cv["t"], unit="ms", utc=True) + pd.Timedelta(hours=3)
+        tt = pd.date_range(cv["t"].iloc[0], periods=11, freq="1D")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=cv["t"], y=cv["eq"], name="Demo kasa", line=dict(color="#58a6ff", width=2.5)))
+        fig.add_trace(go.Scatter(x=tt, y=[start * 10 ** (i / 10) for i in range(11)], name="100$→1000$ hedef yolu",
+                                 line=dict(color=GOLD, dash="dash")))
+        fig.update_layout(height=360, template="plotly_dark", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                          yaxis_title="$", margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("#### Açık pozisyonlar")
+    if ps["positions"]:
+        st.dataframe(pd.DataFrame([{
+            "#": p["id"], "Coin": p["base"], "Yön": "LONG" if p["side"] == 1 else "SHORT", "Kaldıraç": f"{p['lev']}x",
+            "Giriş": A.fmt_px(p["entry"]), "Ortalama": A.fmt_px(p["avg"]), "Fiyat": A.fmt_px(prices[p["symbol"]]),
+            "Marjin ($)": round(p["margin"], 2), "Ekleme": "✓ yapıldı" if p["add_done"] else ("iptal" if p["add_cancel"] else f"bekliyor {A.fmt_px(p['add_px'])}"),
+            "Stop": A.fmt_px(p["stop"]), "TP1/TP2/TP3": " / ".join(("✓" if d else A.fmt_px(t)) for t, d in zip(p["tps"], p["tp_done"])),
+            "Likidasyon": A.fmt_px(p["liq"]),
+            "K/Z ($)": round(max(p["side"] * (prices[p["symbol"]] - p["avg"]) * p["qty"], -p["margin"]) + p["realized"], 2),
+            "Açılış (TSİ)": (pd.Timestamp(p["opened"], unit="ms") + pd.Timedelta(hours=3)).strftime("%d.%m %H:%M"),
+        } for p in ps["positions"]]), hide_index=True, use_container_width=True)
+    else:
+        st.caption("Açık pozisyon yok. Yeni sinyal geldiğinde otomatik açılır.")
+    st.markdown("#### İşlem geçmişi")
+    if closed:
+        st.dataframe(pd.DataFrame([{
+            "#": c["id"], "Coin": c["base"], "Yön": "LONG" if c["side"] == 1 else "SHORT", "Kaldıraç": f"{c['lev']}x",
+            "Giriş": A.fmt_px(c["entry"]), "Çıkış": A.fmt_px(c["exit"]), "Sonuç": c["reason"],
+            "TP": " ".join(f"TP{i + 1}" for i, d in enumerate(c["tp_done"]) if d) or "—", "Ekleme": "✓" if c["add_done"] else "—",
+            "K/Z ($)": round(c["realized"], 2), "Komisyon+funding ($)": round(c["fees"] + c["funding"], 3),
+            "Açılış": (pd.Timestamp(c["opened"], unit="ms") + pd.Timedelta(hours=3)).strftime("%d.%m %H:%M"),
+            "Kapanış": (pd.Timestamp(c["closed"], unit="ms") + pd.Timedelta(hours=3)).strftime("%d.%m %H:%M"),
+        } for c in reversed(closed)]), hide_index=True, use_container_width=True)
+    else:
+        st.caption("Henüz kapanan işlem yok.")
 
 
 # ================================================================= 2) DEMO KASA
@@ -621,4 +705,5 @@ kaybetme olasılığı yüksektir (Demo Kasa sayfasında hesaplanır). Bu site e
 """)
 
 
-{PAGES[0]: page_analysis, PAGES[1]: page_demo, PAGES[2]: page_scanner, PAGES[3]: page_backtest, PAGES[4]: page_method}[page]()
+{PAGES[0]: page_analysis, PAGES[1]: page_paper, PAGES[2]: page_demo, PAGES[3]: page_scanner, PAGES[4]: page_backtest,
+ PAGES[5]: page_method}[page]()
