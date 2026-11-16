@@ -69,6 +69,10 @@ def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat = os.getenv("TELEGRAM_CHAT_ID") or state.get("chat_id")
     if token and not chat:
+        try:
+            print("Bot:", "@" + tg("getMe", token)["result"]["username"])
+        except Exception as e:
+            print("Token geçersiz ya da Telegram'a ulaşılamadı:", type(e).__name__)
         chat = find_chat(token)
         if chat:
             tg("sendMessage", token, chat_id=chat,
