@@ -23,9 +23,9 @@ import data as D
 import scanner as SC
 
 
-def tg(method: str, token: str, **params):
+def tg(method: str, token: str, _timeout: int = 20, **params):
     body = urllib.parse.urlencode(params).encode() if params else None
-    with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/{method}", body, timeout=20) as r:
+    with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/{method}", body, timeout=_timeout) as r:
         return json.loads(r.read().decode())
 
 
@@ -159,7 +159,7 @@ def listen(token, chat, state, ex, seconds: int, capital: float, paper_tick=None
             params = {"timeout": wait, "allowed_updates": json.dumps(["message"])}
             if offset:
                 params["offset"] = offset
-            upd = tg("getUpdates", token, **params).get("result", [])
+            upd = tg("getUpdates", token, _timeout=wait + 15, **params).get("result", [])
         except Exception as e:
             print("getUpdates hatası:", type(e).__name__)
             time.sleep(5)
@@ -259,8 +259,20 @@ def main():
             send_html(token, chat, html_escape("[ANİ DEMO] " + msg))
 
     def ani_poll():
-        if not (ani_token and ani_chat):
+        nonlocal ani_chat
+        if not ani_token:
             return
+        if not ani_chat:                       # açılışta bulunamadıysa /start yazılana kadar tekrar dene
+            if time.time() - state.get("ani_try", 0) < 30:
+                return
+            state["ani_try"] = time.time()
+            ani_chat = find_chat(ani_token)
+            if not ani_chat:
+                return
+            state["ani_chat"] = ani_chat
+            tg("sendMessage", ani_token, chat_id=ani_chat,
+               text="✅ ANİ DEMO bağlandı. Son 4/6/12 saatte sert pump/dump yapan coinlere benzeyen fırsatları ve "
+                    "bu fırsatlara giren ayrı 100$'lık demo kasanın bütün işlemlerini buraya yazacağım. /kasa ile durumu görebilirsin.")
         params = {"timeout": 0, "allowed_updates": json.dumps(["message"])}
         if state.get("ani_offset"):
             params["offset"] = state["ani_offset"]
