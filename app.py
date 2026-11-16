@@ -380,6 +380,7 @@ isabet ölçümüne bak.</div>""", unsafe_allow_html=True)
     st.markdown("##### 🎯 Adaylar")
     if not cd:
         st.caption("Şu an benzer kalıp veya geride kalan eşlikçi yok.")
+        movers_eval_ui()
         return
     st.dataframe(pd.DataFrame([{
         "Coin": c["symbol"].split("/")[0], "Tetik": "✅ geldi" if c["trigger"] else "⏳ bekleniyor",
@@ -409,7 +410,10 @@ isabet ölçümüne bak.</div>""", unsafe_allow_html=True)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("Sarı çizgi referans coinin pump/dump öncesi 8 saati ve sonrasıdır; renkli çizgi adayın şu anki 8 saatidir. "
                "Benzerlik, gelecekte aynı hareketin olacağı anlamına gelmez.")
+    movers_eval_ui()
 
+
+def movers_eval_ui():
     st.markdown("##### 🧪 Bu yöntem geçmişte işe yaradı mı?")
     ncoins = st.slider("Test edilecek coin sayısı (son ~10 gün, 15m)", 40, 200, 100, 20)
     if st.button("▶️ Geçmiş isabeti ölç (1–3 dk sürebilir)"):
