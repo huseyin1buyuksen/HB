@@ -255,7 +255,7 @@ def page_analysis():
 
     with right:
         z, p = r["sized"], r["plan"]
-        st.markdown(f"#### 🧭 Kasa planı — {'🟢 LONG' if s == 1 else '🔴 SHORT'} · {z['leverage']}x · kasa {z['capital']:.0f}$")
+        st.markdown(f"#### 🧭 Kasa planı — {'🟢 LONG' if s == 1 else '🔴 SHORT'} · {z['leverage']}x · kasa {z['capital']:.0f}\\$")
         if z["liq_before_stop_a"] or z["liq_before_stop_b"]:
             st.markdown(f'<div class="warnbox">🚨 {z["leverage"]}x kaldıraçta likidasyon stoptan önce geliyor. '
                         f'Bu stop için en fazla <b>{z["safe_lev"]}x</b>.</div>', unsafe_allow_html=True)
@@ -275,7 +275,7 @@ def page_analysis():
                     unsafe_allow_html=True)
         st.markdown("#### 💬 Yorum")
         with st.container(border=True):
-            st.markdown(r["comment"])
+            st.markdown(r["comment"].replace("$", "\\$"))
 
     # ---- grafik + likidasyon haritası
     st.markdown("#### 🗺️ 1H grafik + tahmini likidasyon haritası")
