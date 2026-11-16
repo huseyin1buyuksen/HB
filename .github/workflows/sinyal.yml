@@ -12,7 +12,7 @@ concurrency:
 jobs:
   tara:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,12 +26,12 @@ jobs:
           path: state
           key: sinyal-state-${{ github.run_id }}
           restore-keys: sinyal-state-
-      - name: Tara ve Telegram'a gönder
+      - name: Tara, Telegram'a gönder ve mesajları cevapla (~13 dk)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CAPITAL: ${{ secrets.CAPITAL }}
-        run: python signal_bot.py --state state/sent.json
+        run: python signal_bot.py --state state/sent.json --listen 780
       - name: Durumu kaydet
         if: always()
         uses: actions/cache/save@v4
