@@ -192,6 +192,7 @@ def main():
     ap.add_argument("--capital", type=float, default=float(os.getenv("CAPITAL") or 0) or None)
     ap.add_argument("--state", default=None, help="gönderilen sinyallerin kaydı (tekrar göndermemek için)")
     ap.add_argument("--listen", type=int, default=0, help="tarama sonrası bu kadar saniye Telegram mesajlarını dinle ve cevapla")
+    ap.add_argument("--loop", type=int, default=0, help="bu kadar saniye çalış: her 15m mumda tara, arada mesajları cevapla")
     a = ap.parse_args()
     C.apply_mode(a.mode)
 
@@ -212,35 +213,14 @@ def main():
             print("Telegram sohbeti bulunamadı: Telegram'da bota /start yaz ve tekrar dene.")
     state["chat_id"] = chat
 
-    ex = D.get_exchange()
-    syms, tickers = D.pick_universe(ex)
-    out = SC.scan(
-        fetch=lambda s, tf, n: D.fetch_ohlcv(ex, s, tf, n),
-        live_fn=lambda s: D.live_snapshot(ex, s, tickers.get(s)),
-        rules_fn=lambda s: D.market_rules(ex, s),
-        symbols=syms, threshold=C.SCORE_THRESHOLD, capital=a.capital, risk_pct=C.RISK_PCT,
-        risk_state={"daily_loss_pct": 0, "open_risk_pct": 0, "risk_pct": C.RISK_PCT * 100},
-        now_ms=ex.milliseconds(), stale_fn=D.is_stale,
-    )
-    sig = [r for r in out["results"] if r["decision"] != "İŞLEM YOK"]
-    new = [r for r in sig if f"{r['symbol']}|{r['bar_time']:%Y%m%d%H%M}|{r['decision']}" not in sent]
-    print(f"{len(out['results'])} kontrat tarandı · aktif sinyal {len(sig)} · yeni {len(new)}")
-    for r in sorted(new, key=lambda r: -r["score"]):
-        text = (f"{'🟢' if r['decision'] == 'LONG' else '🔴'} YENİ SİNYAL\n\n" + SC.card(r, C.RISK_PCT)
-                + "\n\nhttps://hb-mexc-sinyal.streamlit.app\nBu çıktı bir test aracıdır, yatırım tavsiyesi değildir.")
-        print(text, "\n")
-        if token and chat:
-            for i in range(0, len(text), 3800):  # Telegram mesaj sınırı
-                tg("sendMessage", token, chat_id=chat, text=text[i:i + 3800])
-        sent.add(f"{r['symbol']}|{r['bar_time']:%Y%m%d%H%M}|{r['decision']}")
-    state["sent"] = sorted(sent)[-500:]
-    state["last_run"] = str(pd.Timestamp.now(tz="UTC"))
-    save_state(a.state, state)
-
-    # ---- DEMO HESAP: yeni sinyallere sanal giriş + açık pozisyon takibi
+    import time
     import paper as PP
+    ex = D.get_exchange()
     ppath = os.path.join(os.path.dirname(a.state) if a.state else ".", "paper.json")
+    if not os.path.exists(ppath):
+        restore_paper(ppath)
     pst = PP.load(ppath)
+    deadline = time.time() + a.loop if a.loop else 0
 
     def say(msg):
         print(msg, "\n")
@@ -259,26 +239,110 @@ def main():
         PP.snapshot(pst)
         PP.save(ppath, pst)
 
-    try:
-        tick()
+    def cycle():
+        syms, tickers = D.pick_universe(ex)
+        out = SC.scan(
+            fetch=lambda s, tf, n: D.fetch_ohlcv(ex, s, tf, n),
+            live_fn=lambda s: D.live_snapshot(ex, s, tickers.get(s)),
+            rules_fn=lambda s: D.market_rules(ex, s),
+            symbols=syms, threshold=C.SCORE_THRESHOLD, capital=a.capital, risk_pct=C.RISK_PCT,
+            risk_state={"daily_loss_pct": 0, "open_risk_pct": 0, "risk_pct": C.RISK_PCT * 100},
+            now_ms=ex.milliseconds(), stale_fn=D.is_stale,
+        )
+        sig = [r for r in out["results"] if r["decision"] != "İŞLEM YOK"]
+        new = [r for r in sig if f"{r['symbol']}|{r['bar_time']:%Y%m%d%H%M}|{r['decision']}" not in sent]
+        print(f"{pd.Timestamp.now(tz='UTC'):%H:%M} · {len(out['results'])} kontrat tarandı · aktif sinyal {len(sig)} · yeni {len(new)}")
         for r in sorted(new, key=lambda r: -r["score"]):
-            side = r["decision"]
-            res = run_analysis(ex, r["symbol"], pst["cash"], PP.MAX_LEV, side)
-            if res is None:
-                continue
-            _, msg = PP.open_position(pst, r, res)
-            say(msg)
-        PP.snapshot(pst)
-        PP.save(ppath, pst)
-    except Exception as e:
-        print("demo hesap hatası:", type(e).__name__, e)
-
-    if token and chat and a.listen > 0:
-        listen(token, chat, state, ex, a.listen, a.capital or 100.0, paper_tick=tick,
-               paper_status=lambda: PP.status_text(pst))
+            text = (f"{'🟢' if r['decision'] == 'LONG' else '🔴'} YENİ SİNYAL\n\n" + SC.card(r, C.RISK_PCT)
+                    + "\n\nhttps://hb-mexc-sinyal.streamlit.app\nBu çıktı bir test aracıdır, yatırım tavsiyesi değildir.")
+            print(text, "\n")
+            if token and chat:
+                for k in range(0, len(text), 3800):  # Telegram mesaj sınırı
+                    tg("sendMessage", token, chat_id=chat, text=text[k:k + 3800])
+            sent.add(f"{r['symbol']}|{r['bar_time']:%Y%m%d%H%M}|{r['decision']}")
+        state["sent"] = sorted(sent)[-500:]
+        state["last_run"] = str(pd.Timestamp.now(tz="UTC"))
         save_state(a.state, state)
-        tick()
+        # ---- DEMO HESAP: yeni sinyallere sanal giriş + açık pozisyon takibi
+        try:
+            tick()
+            for r in sorted(new, key=lambda r: -r["score"]):
+                res = run_analysis(ex, r["symbol"], pst["cash"], PP.MAX_LEV, r["decision"])
+                if res is None:
+                    continue
+                _, msg = PP.open_position(pst, r, res)
+                say(msg)
+            PP.snapshot(pst)
+            PP.save(ppath, pst)
+        except Exception as e:
+            print("demo hesap hatası:", type(e).__name__, e)
+        publish_paper(ppath)
 
+    while True:
+        try:
+            cycle()
+        except Exception as e:
+            print("tarama hatası:", type(e).__name__, e)
+        if not (token and chat) or (a.listen <= 0 and not a.loop):
+            break
+        now = time.time()
+        if a.loop:
+            end = min((now // 900 + 1) * 900 + 60, deadline)    # bir sonraki 15m mum kapanışı + 1 dk
+        else:
+            end = now + a.listen
+        if end - now > 10:
+            listen(token, chat, state, ex, int(end - now), a.capital or 100.0, paper_tick=tick,
+                   paper_status=lambda: PP.status_text(pst))
+        save_state(a.state, state)
+        try:
+            tick()
+        except Exception as e:
+            print("demo takip hatası:", type(e).__name__, e)
+        if not a.loop or time.time() > deadline - 90:
+            break
+    publish_paper(ppath)
+    save_state(a.state, state)
+
+
+PAPER_RAW = "https://raw.githubusercontent.com/{repo}/demo-data/paper.json"
+
+
+def restore_paper(path):
+    """Önbellek kaybolursa demo hesabı yayınlanan son kopyadan geri yükle."""
+    repo = os.getenv("GITHUB_REPOSITORY")
+    if not repo:
+        return
+    try:
+        with urllib.request.urlopen(PAPER_RAW.format(repo=repo), timeout=20) as r:
+            data = r.read()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        print("Demo hesap yayınlanan kopyadan geri yüklendi.")
+    except Exception as e:
+        print("Demo hesap geri yüklenemedi (ilk çalışma olabilir):", type(e).__name__)
+
+
+def publish_paper(path):
+    """Demo hesabı siteye yayınla: paper.json'u 'demo-data' dalına tek commit olarak yazar."""
+    tok, repo = os.getenv("GH_TOKEN"), os.getenv("GITHUB_REPOSITORY")
+    if not (tok and repo and os.path.exists(path)):
+        return
+    import shutil
+    import subprocess
+    import tempfile
+    d = tempfile.mkdtemp()
+    shutil.copy(path, os.path.join(d, "paper.json"))
+    cmds = [["git", "init", "-q", "-b", "demo-data"], ["git", "add", "paper.json"],
+            ["git", "-c", "user.name=demo-bot", "-c", "user.email=demo-bot@users.noreply.github.com", "commit", "-q", "-m", "demo hesap"],
+            ["git", "push", "-q", "-f", f"https://x-access-token:{tok}@github.com/{repo}.git", "demo-data"]]
+    try:
+        for c in cmds:
+            subprocess.run(c, cwd=d, check=True, capture_output=True, timeout=60)
+    except Exception as e:
+        print("Demo hesap yayınlanamadı:", type(e).__name__)      # komut satırı token içerdiği için yazdırılmaz
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 if __name__ == "__main__":
     main()
