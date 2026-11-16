@@ -276,7 +276,38 @@ def main():
             PP.save(ppath, pst)
         except Exception as e:
             print("demo hesap hatası:", type(e).__name__, e)
+        try:
+            pump_hunter()
+        except Exception as e:
+            print("pump/dump avcısı hatası:", type(e).__name__, e)
         publish_paper(ppath)
+
+    def pump_hunter():
+        """Agresif mod: son 4/6/12 saatte sert pump/dump yapanlara benzeyen coinlerde tetik gelince fırsat + demo giriş."""
+        import movers as M
+        if a.mode != "Agresif":
+            return
+        syms, _ = M.universe(ex)
+        res = M.scan(lambda s, tf, n: D.fetch_ohlcv(ex, s, tf, n), syms)
+        trig = [c for c in res["candidates"] if c["trigger"]]
+        print(f"pump/dump avcısı: {res['n']} coin · hareket eden {len(res['movers'])} · aday {len(res['candidates'])} · tetikli {len(trig)}")
+        for c in trig[:2]:
+            key = f"PD|{c['symbol']}|{c['time']:%Y%m%d}{c['time'].hour // 4}|{c['side']}"
+            if key in sent:
+                continue
+            sent.add(key)
+            base = c["symbol"].split("/")[0]
+            word = "LONG 🟢" if c["side"] == 1 else "SHORT 🔴"
+            say(f"🚀 FIRSAT (pump/dump avcısı, deneysel) — {base}USDT {word}\n\n{M.describe(c)}\n"
+                f"Fiyat: {c['price']:.6g}\nBu strateji henüz kanıtlanmadı; geçmiş isabeti sitede 'Pump/Dump Avcısı' sayfasında ölçülür.")
+            sigd = {"symbol": c["symbol"], "decision": "LONG" if c["side"] == 1 else "SHORT", "score": c["score"] * 100}
+            r = run_analysis(ex, c["symbol"], pst["cash"], PP.MAX_LEV, sigd["decision"])
+            if r is not None:
+                _, msg = PP.open_position(pst, sigd, r)
+                say(msg)
+        state["sent"] = sorted(sent)[-500:]
+        PP.snapshot(pst)
+        PP.save(ppath, pst)
 
     while True:
         try:

@@ -124,7 +124,7 @@ def pbar(label, p, color, base=None, note=""):
 
 # ---------------------------------------------------------------- sayfa seçimi
 
-PAGES = ["🔍 Coin Analizi", "📒 Demo Hesap (canlı)", "💰 Demo Kasa", "📡 Sinyal Tarayıcı", "🧪 Backtest", "📘 Yöntem"]
+PAGES = ["🔍 Coin Analizi", "🚀 Pump/Dump Avcısı", "📒 Demo Hesap (canlı)", "💰 Demo Kasa", "📡 Sinyal Tarayıcı", "🧪 Backtest", "📘 Yöntem"]
 qp = st.query_params.get("p", "0") if hasattr(st, "query_params") else "0"
 try:
     default_page = min(max(int(qp), 0), len(PAGES) - 1)
@@ -320,6 +320,107 @@ def page_analysis():
         st.dataframe(pd.DataFrame(lv), hide_index=True, use_container_width=True)
     st.caption(f"Veri: MEXC USDT-M Futures · son kapanan 15m mum {(r['bar_time'] + pd.Timedelta(minutes=15) + pd.Timedelta(hours=3)):%d.%m %H:%M} TSİ. "
                "Olasılıklar geçmişe dayanır ve geleceği garanti etmez. Yatırım tavsiyesi değildir.")
+
+
+# ================================================================= 1a) PUMP / DUMP AVCISI
+
+@st.cache_data(ttl=600, show_spinner=False)
+def movers_scan(_k: int):
+    import movers as M
+    syms, _ = M.universe(exchange())
+    bar = st.progress(0.0, "Coinler indiriliyor...")
+    res = M.scan(lambda s, tf, n: candles(s, tf, n), syms, progress=lambda p, s: bar.progress(p, f"İndiriliyor: {s}"))
+    bar.empty()
+    return res
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def movers_eval(ncoins: int):
+    import movers as M
+    syms, _ = M.universe(exchange(), ncoins)
+    bar = st.progress(0.0, "Geçmiş veri indiriliyor...")
+    data = M.load_all(lambda s, tf, n: candles(s, tf, n), syms, 1000, progress=lambda p, s: bar.progress(p, f"İndiriliyor: {s}"))
+    bar.empty()
+    with st.spinner("Geçmişteki her 2 saatte tarayıcı yeniden çalıştırılıyor..."):
+        return M.evaluate(data)
+
+
+def page_movers():
+    import movers as M
+    st.markdown("#### 🚀 Pump/Dump Avcısı — sert hareket edenlere benzeyen coinleri bul")
+    st.markdown(f"""<div class="warnbox"><b>Nasıl çalışır:</b> 24s hacmi {M.MIN_QVOL / 1e6:.0f}M$ üzerindeki en fazla {M.MAX_COINS} vadeli coin taranır.
+Son <b>4s / 6s / 12s</b>'te %{M.MOVE_PCT['4s'] * 100:.0f} / %{M.MOVE_PCT['6s'] * 100:.0f} / %{M.MOVE_PCT['12s'] * 100:.0f}'den fazla
+(ve kendi oynaklığının {M.MOVE_Z}σ üstünde) hareket edenler bulunur. Sonra iki tür aday aranır:
+<b>📐 Benzer kalıp</b>: son 8 saatlik fiyat+hacim görüntüsü, hareket edenin pump/dump başlamadan önceki 8 saatine %{M.SIM_MIN * 100:.0f}+ benzeyenler.
+<b>🔗 Geride kalan eşlikçi</b>: son 12 saatte onunla %{M.CORR_MIN * 100:.0f}+ korelasyonla hareket edip daha az gitmiş olanlar.
+<b>Tetik</b>: aday son 2 saatin tepesini (dump için dibini) ortalamanın {M.VOL_MULT}× hacmiyle kırarsa. Tetiklenen adaylar Telegram'a
+"🚀 FIRSAT" olarak gelir ve demo hesap otomatik girer. <b>Deneysel stratejidir</b>: pump kovalamak çok risklidir; aşağıdaki geçmiş
+isabet ölçümüne bak.</div>""", unsafe_allow_html=True)
+    c1, c2 = st.columns([1, 4])
+    if c1.button("🔄 Yeniden tara", use_container_width=True):
+        movers_scan.clear()
+    key = int(pd.Timestamp.now().value // (600 * 10**9))
+    try:
+        res = movers_scan(key)
+    except Exception as e:
+        st.error(f"Tarama yapılamadı: {e}")
+        return
+    mv, cd = res["movers"], res["candidates"]
+    c2.caption(f"{res['n']} coin tarandı · sert hareket eden {len(mv)} · aday {len(cd)} · tetikli {sum(c['trigger'] for c in cd)} · "
+               "sonuç 10 dk önbellekte tutulur")
+    st.markdown("##### 🔥 Son 4/6/12 saatte sert hareket edenler")
+    if mv:
+        st.dataframe(pd.DataFrame([{
+            "Coin": m["symbol"].split("/")[0], "Yön": "🟢 PUMP" if m["side"] == 1 else "🔴 DUMP", "Pencere": m["window"],
+            "Hareket": f"{m['ret'] * 100:+.1f}%", "Sigma": round(m["z"], 1),
+            "Başlangıç (TSİ)": (m["start_time"] + pd.Timedelta(hours=3)).strftime("%d.%m %H:%M")} for m in mv]),
+            hide_index=True, use_container_width=True)
+    else:
+        st.info("Şu an eşiği geçen sert hareket yok. Piyasa sakin; aday da çıkmaz.")
+    st.markdown("##### 🎯 Adaylar")
+    if not cd:
+        st.caption("Şu an benzer kalıp veya geride kalan eşlikçi yok.")
+        return
+    st.dataframe(pd.DataFrame([{
+        "Coin": c["symbol"].split("/")[0], "Tetik": "✅ geldi" if c["trigger"] else "⏳ bekleniyor",
+        "Tür": c["kind"], "Benzerlik": f"%{c['score'] * 100:.0f}", "Yön": "LONG" if c["side"] == 1 else "SHORT",
+        "Referans": f"{c['ref']['symbol'].split('/')[0]} {c['ref']['ret'] * 100:+.1f}% ({c['ref']['window']})",
+        "Kendi hareketi (12s)": f"{c['own_ret'] * 100:+.1f}%", "Fiyat": A.fmt_px(c["price"])} for c in cd]),
+        hide_index=True, use_container_width=True)
+    pick = st.selectbox("Karşılaştırma grafiği", [f"{c['symbol'].split('/')[0]} ↔ {c['ref']['symbol'].split('/')[0]}" for c in cd])
+    c = cd[[f"{x['symbol'].split('/')[0]} ↔ {x['ref']['symbol'].split('/')[0]}" for x in cd].index(pick)]
+    st.markdown(M.describe(c).replace("\n", "  \n"))
+    m = c["ref"]
+    mdf, cdf = res["data"][m["symbol"]], res["data"][c["symbol"]]
+    s0 = m["start_idx"]
+    mp = mdf["close"].iloc[s0 - M.PRE_BARS:]
+    mp = (mp / mp.iloc[M.PRE_BARS - 1] - 1) * 100
+    cp = cdf["close"].iloc[-M.PRE_BARS:]
+    cp = (cp / cp.iloc[-1] - 1) * 100
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=np.arange(-M.PRE_BARS + 1, len(mp) - M.PRE_BARS + 1) / 4, y=mp.to_numpy(),
+                             name=f"{m['symbol'].split('/')[0]} (hareket öncesi + hareket)", line=dict(color=GOLD, width=2)))
+    fig.add_trace(go.Scatter(x=np.arange(-M.PRE_BARS + 1, 1) / 4, y=cp.to_numpy(), name=f"{c['symbol'].split('/')[0]} (şimdi)",
+                             line=dict(color=GREEN if c["side"] == 1 else RED, width=2.5)))
+    fig.add_vline(x=0, line_dash="dash", line_color=GREY, annotation_text="hareket başlangıcı / şimdi")
+    fig.update_layout(height=380, template="plotly_dark", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                      xaxis_title="Saat (0 = hareket başlangıcı / şimdi)", yaxis_title="% değişim",
+                      margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", y=1.1))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Sarı çizgi referans coinin pump/dump öncesi 8 saati ve sonrasıdır; renkli çizgi adayın şu anki 8 saatidir. "
+               "Benzerlik, gelecekte aynı hareketin olacağı anlamına gelmez.")
+
+    st.markdown("##### 🧪 Bu yöntem geçmişte işe yaradı mı?")
+    ncoins = st.slider("Test edilecek coin sayısı (son ~10 gün, 15m)", 40, 200, 100, 20)
+    if st.button("▶️ Geçmiş isabeti ölç (1–3 dk sürebilir)"):
+        st.session_state["mv_eval"] = movers_eval(ncoins)
+    ev = st.session_state.get("mv_eval")
+    if ev:
+        st.dataframe(ev["table"], hide_index=True, use_container_width=True)
+        st.caption(f"Son {ev['bars']} adet 15m mumda (~{ev['bars'] / 96:.0f} gün) her 2 saatte tarayıcı yeniden çalıştırıldı. Her aday için "
+                   f"sonraki {ev['horizon_h']:.0f} saatte fiyatın önce lehte mi yoksa aleyhte mi %{ev['move_pct']:.0f} gittiği sayıldı. "
+                   "'Rastgele' satırı aynı anlarda seçilen rastgele coinlerdir: adaylar rastgeleden belirgin şekilde iyi değilse "
+                   "yöntemin üstünlüğü yoktur.")
 
 
 # ================================================================= 1b) CANLI DEMO HESAP (paper trading)
@@ -705,5 +806,5 @@ kaybetme olasılığı yüksektir (Demo Kasa sayfasında hesaplanır). Bu site e
 """)
 
 
-{PAGES[0]: page_analysis, PAGES[1]: page_paper, PAGES[2]: page_demo, PAGES[3]: page_scanner, PAGES[4]: page_backtest,
- PAGES[5]: page_method}[page]()
+{PAGES[0]: page_analysis, PAGES[1]: page_movers, PAGES[2]: page_paper, PAGES[3]: page_demo, PAGES[4]: page_scanner,
+ PAGES[5]: page_backtest, PAGES[6]: page_method}[page]()
