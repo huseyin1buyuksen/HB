@@ -36,6 +36,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_ANI_TOKEN: ${{ secrets.TELEGRAM_ANI_TOKEN }}
+          TELEGRAM_KADEME_TOKEN: ${{ secrets.TELEGRAM_KADEME_TOKEN }}
           CAPITAL: ${{ secrets.CAPITAL }}
         run: python -u signal_bot.py --state state/sent.json --loop 19500
       - name: Durumu kaydet
