@@ -191,6 +191,61 @@ def listen(token, chat, state, ex, seconds: int, capital: float, paper_tick=None
                 send_html(token, chat, html_escape(f"{base} analiz edilemedi: {type(e).__name__}: {e}"[:500]))
 
 
+class SideBot:
+    """Ek Telegram botu: kendi sohbeti, /kasa komutu; token yoksa mesajları ana bota etiketli gönderir."""
+
+    def __init__(self, env, key, title, state, fallback, welcome, status_fn, help_text):
+        import time
+        self.time = time
+        self.token = os.getenv(env)
+        self.key, self.title, self.state, self.fallback = key, title, state, fallback
+        self.welcome, self.status_fn, self.help_text = welcome, status_fn, help_text
+        self.chat = os.getenv(env.replace("TOKEN", "CHAT_ID")) or state.get(key + "_chat")
+        self.ensure()
+
+    def ensure(self):
+        if not self.token or self.chat or self.time.time() - self.state.get(self.key + "_try", 0) < 30:
+            return
+        self.state[self.key + "_try"] = self.time.time()
+        try:
+            self.chat = find_chat(self.token)
+        except Exception as e:
+            print(self.title, "botuna ulaşılamadı:", type(e).__name__)
+            return
+        if self.chat:
+            self.state[self.key + "_chat"] = self.chat
+            tg("sendMessage", self.token, chat_id=self.chat, text=self.welcome)
+        else:
+            print(self.title, "sohbeti bulunamadı: Telegram'da bota /start yaz.")
+
+    def say(self, msg):
+        print(f"[{self.title}]", msg, "\n")
+        if self.token and self.chat:
+            send_html(self.token, self.chat, html_escape(msg))
+        else:
+            self.fallback(f"[{self.title}] " + msg)
+
+    def poll(self):
+        if not self.token:
+            return
+        self.ensure()
+        if not self.chat:
+            return
+        params = {"timeout": 0, "allowed_updates": json.dumps(["message"])}
+        if self.state.get(self.key + "_offset"):
+            params["offset"] = self.state[self.key + "_offset"]
+        for u in tg("getUpdates", self.token, **params).get("result", []):
+            self.state[self.key + "_offset"] = u["update_id"] + 1
+            m = u.get("message") or {}
+            if str((m.get("chat") or {}).get("id", "")) != str(self.chat) or m.get("date", 0) < self.time.time() - 900:
+                continue
+            t = (m.get("text") or "").lower().strip("/ ")
+            if t in ("kasa", "demo", "durum", "bakiye"):
+                send_html(self.token, self.chat, html_escape(self.status_fn()))
+            else:
+                send_html(self.token, self.chat, html_escape(self.help_text))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default=C.DEFAULT_MODE, choices=list(C.MODES))
@@ -225,25 +280,18 @@ def main():
     if not os.path.exists(ppath):
         restore_paper(ppath)
     pst = PP.load(ppath)
-    # ---- ANİ DEMO: pump/dump avcısı için ayrı Telegram botu ve ayrı demo kasa
-    ani_token = os.getenv("TELEGRAM_ANI_TOKEN")
-    ani_chat = os.getenv("TELEGRAM_ANI_CHAT_ID") or state.get("ani_chat")
-    if ani_token and not ani_chat:
-        try:
-            ani_chat = find_chat(ani_token)
-            if ani_chat:
-                tg("sendMessage", ani_token, chat_id=ani_chat,
-                   text="✅ ANİ DEMO bağlandı. Son 4/6/12 saatte sert pump/dump yapan coinlere benzeyen fırsatları ve "
-                        "bu fırsatlara giren ayrı 100$'lık demo kasanın bütün işlemlerini buraya yazacağım. /kasa ile durumu görebilirsin.")
-            else:
-                print("Ani Demo sohbeti bulunamadı: Telegram'da Ani Demo botuna /start yaz.")
-        except Exception as e:
-            print("Ani Demo botuna ulaşılamadı:", type(e).__name__)
-    state["ani_chat"] = ani_chat
-    p2path = os.path.join(os.path.dirname(a.state) if a.state else ".", "paper_ani.json")
+    # ---- EK BOTLAR: Ani Demo (ani düşüş → LONG) ve Kademe Demo (2$ giriş + 50$ ekleme); her birinin ayrı kasası var
+    import dump as DU
+    import kademe as KD
+    sdir = os.path.dirname(a.state) if a.state else "."
+    p2path = os.path.join(sdir, "paper_ani_v2.json")          # yeni strateji: kasa sıfırdan (100$)
     if not os.path.exists(p2path):
-        restore_paper(p2path, "paper_ani.json")
+        restore_paper(p2path, "paper_ani_v2.json")
     pst2 = PP.load(p2path)
+    p3path = os.path.join(sdir, "kademe.json")
+    if not os.path.exists(p3path):
+        restore_paper(p3path, "kademe.json")
+    pst3 = KD.load(p3path)
     deadline = time.time() + a.loop if a.loop else 0
 
     def say(msg):
@@ -251,43 +299,56 @@ def main():
         if token and chat:
             send_html(token, chat, html_escape(msg))
 
-    def say2(msg):
-        print("[ANİ]", msg, "\n")
-        if ani_token and ani_chat:
-            send_html(ani_token, ani_chat, html_escape(msg))
-        elif token and chat:
-            send_html(token, chat, html_escape("[ANİ DEMO] " + msg))
+    ani = SideBot("TELEGRAM_ANI_TOKEN", "ani", "ANİ DEMO", state, say,
+                  welcome="✅ ANİ DEMO bağlandı. Son 4 saatte zirvesinden %15+ ani düşen coinleri ~2 dakikada bir bulup "
+                          "LONG giriş sinyali yazacağım; ayrı 100$'lık demo kasa bu sinyallere girer. /kasa ile durumu görebilirsin.",
+                  status_fn=lambda: PP.status_text(pst2).replace("📒 DEMO KASA", "🚀 ANİ DEMO KASA"),
+                  help_text="ANİ DEMO: son 4 saatte %15+ ani düşen coinler için LONG sinyali ve ayrı demo kasa.\n/kasa → kasanın durumu")
+    kad = SideBot("TELEGRAM_KADEME_TOKEN", "kademe", "KADEME DEMO", state, say,
+                  welcome=f"✅ KADEME DEMO bağlandı. Kasa {KD.START:.0f}$. Ani düşen coinlere düşüşten {KD.OPEN_DELAY_H} saat sonra "
+                          f"{KD.FIRST:.0f}$ ile {KD.LEV}x LONG açar; {KD.ADD_EVERY_H} saatte bir en çok zarardaki pozisyona "
+                          f"{KD.ADD:.0f}$ ekler; ortalamanın %{KD.TP * 100:.0f} üstünde tamamını kapatır. /kasa ile durumu görebilirsin.",
+                  status_fn=lambda: KD.status_text(pst3),
+                  help_text="KADEME DEMO: 2$ giriş + en çok zarardakine 50$ ekleme stratejisinin ayrı demo kasası.\n/kasa → kasanın durumu")
+    if ani.chat and not state.get("ani_v2_notice"):
+        ani.say("🔄 ANİ DEMO GÜNCELLENDİ: artık son 4 saatte zirvesinden %15+ ani düşen coinleri ~2 dakikada bir bulup "
+                "LONG giriş sinyali yazıyorum. Demo kasa sıfırlandı, 100$'dan yeniden başlıyor.")
+        state["ani_v2_notice"] = True
+    watch = DU.DumpWatch(ex)
+    dump_last = state.setdefault("dump_last", {})
 
-    def ani_poll():
-        nonlocal ani_chat
-        if not ani_token:
-            return
-        if not ani_chat:                       # açılışta bulunamadıysa /start yazılana kadar tekrar dene
-            if time.time() - state.get("ani_try", 0) < 30:
-                return
-            state["ani_try"] = time.time()
-            ani_chat = find_chat(ani_token)
-            if not ani_chat:
-                return
-            state["ani_chat"] = ani_chat
-            tg("sendMessage", ani_token, chat_id=ani_chat,
-               text="✅ ANİ DEMO bağlandı. Son 4/6/12 saatte sert pump/dump yapan coinlere benzeyen fırsatları ve "
-                    "bu fırsatlara giren ayrı 100$'lık demo kasanın bütün işlemlerini buraya yazacağım. /kasa ile durumu görebilirsin.")
-        params = {"timeout": 0, "allowed_updates": json.dumps(["message"])}
-        if state.get("ani_offset"):
-            params["offset"] = state["ani_offset"]
-        for u in tg("getUpdates", ani_token, **params).get("result", []):
-            state["ani_offset"] = u["update_id"] + 1
-            m = u.get("message") or {}
-            if str((m.get("chat") or {}).get("id", "")) != str(ani_chat) or m.get("date", 0) < time.time() - 900:
+    def side_polls():
+        for b in (ani, kad):
+            try:
+                b.poll()
+            except Exception as e:
+                print(b.title, "bot hatası:", type(e).__name__)
+
+    def dump_tick():
+        """~2 dakikada bir: ani düşüş ara → Ani Demo'ya sinyal + LONG giriş, Kademe Demo'ya sıraya al."""
+        try:
+            hits = watch.poll()
+        except Exception as e:
+            print("ani düşüş taraması hatası:", type(e).__name__, e)
+            hits = []
+        for d in hits[:3]:
+            if time.time() - dump_last.get(d["symbol"], 0) < DU.WINDOW_H * 3600:
                 continue
-            t = (m.get("text") or "").lower().strip("/ ")
-            if t in ("kasa", "demo", "durum", "bakiye"):
-                send_html(ani_token, ani_chat, html_escape(PP.status_text(pst2).replace("DEMO KASA", "ANİ DEMO KASA")))
-            else:
-                send_html(ani_token, ani_chat, html_escape(
-                    "ANİ DEMO botu: pump/dump avcısının fırsatlarını ve ayrı demo kasasını yazar.\n/kasa → ani demo kasanın durumu\n"
-                    "Coin analizi için ana bota (HB MEXC Sinyal) coin adını yaz."))
+            dump_last[d["symbol"]] = time.time()
+            ani.say(DU.describe(d))
+            r = run_analysis(ex, d["symbol"], pst2["cash"], PP.MAX_LEV, "LONG")
+            if r is not None:
+                sigd = {"symbol": d["symbol"], "decision": "LONG", "score": abs(d["drop"]) * 100}
+                _, msg = PP.open_position(pst2, sigd, r)
+                ani.say(msg.replace("DEMO İŞLEM AÇILDI", "ANİ DEMO İŞLEM AÇILDI").replace(
+                    "Neden: sinyal puanı", f"Neden: %{d['drop'] * 100:.1f} ani düşüş · puan"))
+            m = KD.queue(pst3, d)
+            if m:
+                kad.say(m)
+        for m in KD.process_pending(pst3, watch.price) + KD.add_cycle(pst3, watch.price):
+            kad.say(m)
+        for k in [k for k, v in dump_last.items() if time.time() - v > 86400]:
+            del dump_last[k]
 
     def fetch_5m(sym, since_ms):
         return D.fetch_ohlcv(ex, sym, "5m", since_ms=since_ms)
@@ -300,13 +361,21 @@ def main():
             say(rep)
         PP.snapshot(pst)
         PP.save(ppath, pst)
+        dump_tick()
         for m in PP.update(pst2, fetch_5m):
-            say2(m)
+            ani.say(m)
         rep = PP.roll_day(pst2)
         if rep:
-            say2(rep.replace("GÜN SONU RAPORU", "ANİ DEMO GÜN SONU RAPORU"))
+            ani.say(rep.replace("GÜN SONU RAPORU", "ANİ DEMO GÜN SONU RAPORU"))
         PP.snapshot(pst2)
         PP.save(p2path, pst2)
+        for m in KD.update(pst3, fetch_5m):
+            kad.say(m)
+        rep = PP.roll_day(pst3)
+        if rep:
+            kad.say(rep.replace("GÜN SONU RAPORU", "KADEME DEMO GÜN SONU RAPORU"))
+        PP.snapshot(pst3)
+        PP.save(p3path, pst3)
 
     def cycle():
         syms, tickers = D.pick_universe(ex)
@@ -345,38 +414,7 @@ def main():
             PP.save(ppath, pst)
         except Exception as e:
             print("demo hesap hatası:", type(e).__name__, e)
-        try:
-            pump_hunter()
-        except Exception as e:
-            print("pump/dump avcısı hatası:", type(e).__name__, e)
-        publish_paper([ppath, p2path])
-
-    def pump_hunter():
-        """Agresif mod: son 4/6/12 saatte sert pump/dump yapanlara benzeyen coinlerde tetik gelince fırsat + demo giriş."""
-        import movers as M
-        if a.mode != "Agresif":
-            return
-        syms, _ = M.universe(ex)
-        res = M.scan(lambda s, tf, n: D.fetch_ohlcv(ex, s, tf, n), syms)
-        trig = [c for c in res["candidates"] if c["trigger"]]
-        print(f"pump/dump avcısı: {res['n']} coin · hareket eden {len(res['movers'])} · aday {len(res['candidates'])} · tetikli {len(trig)}")
-        for c in trig[:2]:
-            key = f"PD|{c['symbol']}|{c['time']:%Y%m%d}{c['time'].hour // 4}|{c['side']}"
-            if key in sent:
-                continue
-            sent.add(key)
-            base = c["symbol"].split("/")[0]
-            word = "LONG 🟢" if c["side"] == 1 else "SHORT 🔴"
-            say2(f"🚀 FIRSAT (pump/dump avcısı, deneysel) — {base}USDT {word}\n\n{M.describe(c)}\n"
-                f"Fiyat: {c['price']:.6g}\nBu strateji henüz kanıtlanmadı; geçmiş isabeti sitede 'Pump/Dump Avcısı' sayfasında ölçülür.")
-            sigd = {"symbol": c["symbol"], "decision": "LONG" if c["side"] == 1 else "SHORT", "score": c["score"] * 100}
-            r = run_analysis(ex, c["symbol"], pst2["cash"], PP.MAX_LEV, sigd["decision"])
-            if r is not None:
-                _, msg = PP.open_position(pst2, sigd, r)
-                say2(msg.replace("DEMO İŞLEM AÇILDI", "ANİ DEMO İŞLEM AÇILDI"))
-        state["sent"] = sorted(sent)[-500:]
-        PP.snapshot(pst2)
-        PP.save(p2path, pst2)
+        publish_paper([ppath, p2path, p3path])
 
     while True:
         try:
@@ -392,7 +430,7 @@ def main():
             end = now + a.listen
         if end - now > 10:
             listen(token, chat, state, ex, int(end - now), a.capital or 100.0, paper_tick=tick,
-                   paper_status=lambda: PP.status_text(pst), extra_poll=ani_poll)
+                   paper_status=lambda: PP.status_text(pst), extra_poll=side_polls)
         save_state(a.state, state)
         try:
             tick()
@@ -400,7 +438,7 @@ def main():
             print("demo takip hatası:", type(e).__name__, e)
         if not a.loop or time.time() > deadline - 90:
             break
-    publish_paper([ppath, p2path])
+    publish_paper([ppath, p2path, p3path])
     save_state(a.state, state)
 
 

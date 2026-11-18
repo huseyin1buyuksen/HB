@@ -446,11 +446,19 @@ def page_paper():
                 'boştaki kasanın %50\'si ile giriş, planlı seviyede %25 ekleme, 10x (likidasyon stoptan önce gelecekse güvenli '
                 'kaldıraç), TP1 %30 · TP2 %40 · TP3 kalan, TP1 sonrası stop girişe. Her işlem Telegram\'a yazılır, gün sonunda '
                 'rapor gelir. Telegram\'da <b>/kasa</b> yazarak anlık durumu görebilirsin.</div>', unsafe_allow_html=True)
-    which = st.radio("Hesap", ["📒 Ana demo (tüm sinyaller)", "🚀 Ani demo (pump/dump avcısı)"], horizontal=True,
+    accounts = {"📒 Ana demo (tüm sinyaller)": "paper.json",
+                "🚀 Ani demo (ani düşüş → LONG)": "paper_ani_v2.json",
+                "🪜 Kademe demo (2$ + 50$ ekleme)": "kademe.json"}
+    which = st.radio("Hesap", list(accounts), horizontal=True,
                      help="Ana demo: sinyal tarayıcının her sinyaline girer (HB MEXC Sinyal botu). "
-                          "Ani demo: sadece pump/dump avcısının tetiklenen fırsatlarına girer (Ani Demo botu). İkisinin kasası ayrıdır.")
+                          "Ani demo: son 4 saatte %15+ ani düşen coinlere hemen LONG girer (Ani Demo botu). "
+                          "Kademe demo: ani düşüşten 4 saat sonra 2$ ile LONG açar, 6 saatte bir en çok zarardakine 50$ ekler, "
+                          "ortalamanın %3 üstünde tamamını kapatır (Kademe Demo botu). Üçünün kasası ayrıdır.")
+    if which.startswith("🪜"):
+        st.caption("Kademe kuralları: düşüşten 4 saat sonra 2$ marjin · 10x LONG · 6 saatte bir en çok zarardaki pozisyona tek seferlik "
+                   "50$ ekleme · ortalama +%3'te tamamı kapanır · stop yok, likidasyonda marjin gider.")
     try:
-        ps = paper_state("paper.json" if which.startswith("📒") else "paper_ani.json")
+        ps = paper_state(accounts[which])
     except Exception:
         st.info("Demo hesap verisi henüz yayınlanmadı. İlk otomatik çalışmadan sonra (en geç ~15 dk) burada görünür.")
         return
